@@ -26,6 +26,7 @@
 #include <errno.h>
 #include <signal.h>
 #include <stdio.h>
+#include <poll.h>
 
 #define MAX_REQ_BYTES (16 * 1024 * 1024)   /* 16 MiB cap; mirrors Caddy's cap. */
 
@@ -61,6 +62,65 @@ kk_integer_t kk_aw_listen(kk_string_t path, kk_context_t* ctx) {
 kk_integer_t kk_aw_accept(kk_integer_t fd_i, kk_context_t* ctx) {
   int fd = (int)kk_integer_clamp32(fd_i, ctx);
   int conn = accept(fd, NULL, NULL);
+  return kk_integer_from_int(conn, ctx);
+}
+
+/* Like kk_aw_accept, but bounded by `timeout_ms`. We poll() the listen
+ * fd so an idle daemon can return control to Koka and fire its periodic
+ * tick instead of blocking in accept() forever.
+ *
+ * Returns:
+ *    >= 0  the accepted connection fd
+ *    -2    timeout elapsed with no incoming connection (tick opportunity)
+ *    -1    an unrecoverable error
+ *
+ * EINTR handling: a signal interrupting poll() is treated as a timeout
+ * (return -2), NOT a retry. Rationale — the caller's loop already
+ * recurses after a -2 by running the tick and polling again, so a
+ * spurious early wakeup costs at most one extra (cheap) tick + re-poll
+ * and never loses a connection. Retrying in C instead would risk a
+ * subtle busy-loop if a signal kept firing, and would also reset the
+ * remaining timeout. Treating EINTR as "just tick early" keeps the
+ * timing semantics simple and the loop liveness obvious.
+ *
+ * No fd is leaked: poll() opens nothing, and we only accept() once we
+ * know the listen fd is readable. If that accept() itself fails we
+ * return -1 without having created a descriptor. */
+kk_integer_t kk_aw_accept_timeout(kk_integer_t fd_i, kk_integer_t timeout_ms_i,
+                                  kk_context_t* ctx) {
+  int fd = (int)kk_integer_clamp32(fd_i, ctx);
+  int timeout_ms = (int)kk_integer_clamp32(timeout_ms_i, ctx);
+
+  struct pollfd pfd;
+  pfd.fd = fd;
+  pfd.events = POLLIN;
+  pfd.revents = 0;
+
+  int pr = poll(&pfd, 1, timeout_ms);
+  if (pr == 0) {
+    /* timeout: nothing to accept */
+    return kk_integer_from_int(-2, ctx);
+  }
+  if (pr < 0) {
+    /* EINTR -> treat as a timeout (tick early, then re-poll); any other
+     * poll error is unrecoverable. */
+    if (errno == EINTR) return kk_integer_from_int(-2, ctx);
+    return kk_integer_from_int(-1, ctx);
+  }
+  /* Readable (or an error condition surfaced via revents). Attempt the
+   * accept; reuse the same logic as kk_aw_accept. A signal or a peer that
+   * reset between poll() and accept() shows up as a *transient* errno —
+   * forwarding those as -1 would stop the whole serve loop (kill the
+   * daemon) over a benign hiccup, and poll-then-accept widens that race
+   * window. Treat the transient set as -2 ("tick early, then re-poll");
+   * only a genuinely unrecoverable accept() error is -1. */
+  int conn = accept(fd, NULL, NULL);
+  if (conn < 0) {
+    if (errno == EINTR || errno == ECONNABORTED ||
+        errno == EAGAIN || errno == EWOULDBLOCK)
+      return kk_integer_from_int(-2, ctx);
+    return kk_integer_from_int(-1, ctx);
+  }
   return kk_integer_from_int(conn, ctx);
 }
 

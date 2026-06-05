@@ -19,6 +19,13 @@ pub extern kk-aw-listen( path : string ) : <ndet,net> int
 extern kk-aw-accept( fd : int ) : <ndet,net> int
   c "kk_aw_accept"
 
+// Bounded accept: poll the listen fd for at most `timeout-ms`.
+//   >= 0  accepted connection fd
+//   -2    timeout (no connection; caller should tick + retry)
+//   -1    unrecoverable error
+extern kk-aw-accept-timeout( fd : int, timeout-ms : int ) : <ndet,net> int
+  c "kk_aw_accept_timeout"
+
 extern kk-aw-read-request( conn : int ) : <ndet,net> string
   c "kk_aw_read_request"
 
@@ -77,25 +84,46 @@ pub fun format-response( r : response ) : string
 //  The serve loop
 // ----------------------------------------------------------------------
 
-// Run the accept/dispatch/respond loop forever (or until accept fails).
-// `dispatch` is the caller-provided routing function. Its effect row is
-// polymorphic — it just propagates into the loop's row.
+// Run the accept/dispatch/respond loop forever (or until accept errors).
+//
+// `dispatch` is the caller-provided routing function. `tick` is a caller
+// -provided periodic action run on every IDLE timeout only (never on the
+// request path — see serve-go) — socket_serve stays decoupled from *what*
+// the tick does (e.g. draining deliveries). `timeout-ms` bounds each
+// accept so the tick fires on an idle instance instead of starving behind
+// a blocking accept(). Effect rows are polymorphic and propagate.
 pub fun serve-loop( socket-fd : int,
-                    dispatch : (request) -> <ndet,net,div|e> response )
+                    dispatch : (request) -> <ndet,net,div|e> response,
+                    tick : () -> <ndet,net,div|e> (),
+                    timeout-ms : int )
   : <ndet,net,div|e> ()
-  serve-go(socket-fd, dispatch)
+  serve-go(socket-fd, dispatch, tick, timeout-ms)
 
 fun serve-go( fd : int,
-              dispatch : (request) -> <ndet,net,div|e> response )
+              dispatch : (request) -> <ndet,net,div|e> response,
+              tick : () -> <ndet,net,div|e> (),
+              timeout-ms : int )
   : <ndet,net,div|e> ()
-  val conn = kk-aw-accept(fd)
-  if conn < 0 then ()
+  val conn = kk-aw-accept-timeout(fd, timeout-ms)
+  if conn == -2 then
+    // idle timeout: run the periodic tick, then keep listening.
+    tick()
+    serve-go(fd, dispatch, tick, timeout-ms)
+  elif conn < 0 then
+    // -1 (or any other negative): unrecoverable accept error; stop.
+    ()
   else
     val encoded = kk-aw-read-request(conn)
     val resp = dispatch-or-bad(encoded, dispatch)
     val _ = kk-aw-write-response(conn, format-response(resp))
     kk-aw-close(conn)
-    serve-go(fd, dispatch)
+    // NB: the tick runs ONLY on the idle branch above, never here. The
+    // tick does blocking delivery I/O (curl POSTs) on this single accept
+    // thread; running it after every request would let a hung peer freeze
+    // request serving for the whole batch's worth of timeouts. Draining
+    // only when idle bounds that to genuinely-idle periods, and the
+    // separate `annexwyrm drain` agent is the reliable bulk path.
+    serve-go(fd, dispatch, tick, timeout-ms)
 
 fun dispatch-or-bad( encoded : string,
                      dispatch : (request) -> <ndet,net,div|e> response )

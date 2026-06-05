@@ -57,6 +57,7 @@ pub fun main() : io ()
   val args = get-args()
   match args
     Cons("serve", _)            -> cmd-serve()
+    Cons("drain", _)            -> cmd-drain()
     Cons("init", Cons(d, _))    -> cmd-init(d)
     Cons("dump-actor", _)       -> cmd-dump-actor()
     Cons("publish", Cons(i, _)) -> cmd-publish(i)
@@ -65,7 +66,7 @@ pub fun main() : io ()
     _ -> usage()
 
 fun usage() : console ()
-  println("usage: annexwyrm <serve|init DIR|dump-actor|publish ID|follow URL|unfollow URL>")
+  println("usage: annexwyrm <serve|drain|init DIR|dump-actor|publish ID|follow URL|unfollow URL>")
 
 // ----------------------------------------------------------------------
 //  init: create database + minted keypair
@@ -163,12 +164,61 @@ fun cmd-serve() : io ()
     else
       info("serve/listening", [("socket", socket-path),
                                ("base-url", get-base-url())])
-      serve-loop(fd, dispatch)
+      // The idle tick drains queued deliveries (see serve-tick). Operators
+      // running a separate `annexwyrm drain` agent — and the federation e2e,
+      // which needs delivery driven solely by explicit drains to stay
+      // deterministic — set ANNEXWYRM_SERVE_DRAIN=0 to make it a no-op,
+      // leaving the accept thread to do nothing but serve. Either tick
+      // captures no value struct (koka#654 stays clear).
+      val tick = if serve-drain-enabled() then (fn() serve-tick()) else (fn() ())
+      serve-loop(fd, dispatch, tick, 5000)
+
+// Whether the serve loop drains deliveries on idle. Default on; set
+// ANNEXWYRM_SERVE_DRAIN=0 to delegate delivery to an external `annexwyrm
+// drain` and keep the accept thread free of blocking POSTs.
+fun serve-drain-enabled() : ndet bool
+  match get-env-value("ANNEXWYRM_SERVE_DRAIN")
+    Just(v) -> v != "0"
+    Nothing -> True
+
+// Periodic maintenance run by the serve loop on idle. Drains a SMALL batch
+// (each delivery is a blocking curl POST on this accept thread, so the
+// batch bounds the worst-case idle stall to batch×curl-timeout; the
+// separate `annexwyrm drain` agent does bulk off-thread). Logs the count at
+// info ONLY when it did work, so an idle daemon's log stays quiet.
+// drain-deliveries' row (<db,time,log,config,crypto,deliver>) is a subset
+// of cmd-serve's installed handler stack, so it discharges with no extra
+// `with`.
+fun serve-tick() : <db,time,log,config,crypto,deliver|e> ()
+  val n = drain-deliveries(4)
+  if n > 0 then info("serve/drained", [("count", n.show)])
 
 fun env-or-socket() : ndet string
   match get-env-value("ANNEXWYRM_SOCKET")
     Just(v) | v != "" -> v
     _ -> "/tmp/annexwyrm.sock"
+
+// ----------------------------------------------------------------------
+//  drain: process the delivery queue once, then exit
+// ----------------------------------------------------------------------
+
+// Manual lever for ops + a deterministic trigger for the federation e2e.
+// Installs the same handlers drain-deliveries needs, drains one batch of
+// 64, prints the processed count, and exits.
+fun cmd-drain() : io ()
+  with with-env-config
+  with with-console-log
+  with with-real-time
+  with with-openssl-crypto
+  with with-curl-deliver
+  val data-dir = get-data-dir()
+  val db-path = data-dir ++ "/annexwyrm.db"
+  val h = kk-db-open(db-path)
+  if h < 0 then println("could not open db: " ++ db-path)
+  else
+    with with-sqlite-db(h)
+    val n = drain-deliveries(64)
+    println(n.show)
 
 // ----------------------------------------------------------------------
 //  CLI helpers

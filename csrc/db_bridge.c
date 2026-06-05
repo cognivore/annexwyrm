@@ -37,6 +37,16 @@ kk_integer_t kk_aw_db_open(kk_string_t path, kk_context_t* ctx) {
     /* Always enable foreign keys and WAL mode. */
     sqlite3_exec(db, "PRAGMA foreign_keys=ON;", NULL, NULL, NULL);
     sqlite3_exec(db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
+    /* busy_timeout is mandatory once more than one process touches this DB:
+     * the `serve` daemon's delivery tick and a concurrent `annexwyrm drain`
+     * (or two daemons in the federation e2e) are separate WAL writers. With
+     * the default timeout of 0, the second writer's sqlite3_step returns
+     * SQLITE_BUSY *immediately*; kk_aw_db_exec reports that as changes=-1 and
+     * every caller discards the return, so the UPDATE is silently dropped —
+     * a delivered activity never transitions out of `pending` and gets
+     * re-POSTed. 5s of wait-and-retry makes collided writers serialize
+     * instead of losing their write. */
+    sqlite3_busy_timeout(db, 5000);
   }
   kk_string_drop(path, ctx);
   return kk_integer_from_int(handle, ctx);
