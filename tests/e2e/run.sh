@@ -346,8 +346,13 @@ assert_sql "$DB" "SELECT privacy FROM item WHERE id='$SUBJECT_URL';" \
     "public" "subject is now public"
 assert_sql "$DB" "SELECT count(*) FROM item WHERE id='$SUBJECT_URL';" \
     "1" "still exactly one item row"
-assert_sql "$DB" "SELECT updated_at > published_at FROM item WHERE id='$SUBJECT_URL';" \
-    "1" "updated_at advanced on publish"
+# `>=`, not `>`: timestamps are ISO-8601 at one-second granularity, so when
+# publish lands in the same wall-clock second as the original upload the two
+# are equal — a strict `>` made this assertion flaky (it raced). The privacy
+# flip below is the real proof publish did its work; this just guards that
+# updated_at is never stamped *behind* published_at.
+assert_sql "$DB" "SELECT updated_at >= published_at FROM item WHERE id='$SUBJECT_URL';" \
+    "1" "updated_at not behind published_at on publish"
 
 # --- Step P3: the item is now publicly visible over HTTP ----------------
 note "  P3 — anonymous GET now 200 + public-state markers"

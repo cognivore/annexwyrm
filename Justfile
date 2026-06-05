@@ -87,6 +87,15 @@ test-e2e:
 test-e2e-caddy:
     bash tests/e2e/run-caddy.sh
 
+# Two-instance ActivityPub S2S federation test: two daemons, each behind its
+# OWN isolated Caddy (own probed-free site + admin ports), talking AP server-
+# to-server over http://127.0.0.1. Drives the follow handshake (A follows B,
+# B auto-accepts) then B publishes and the delivery queue drains a SIGNED POST
+# into A's real inbox. Auto-selects Tier 1 (the binary's own `drain` POSTs the
+# delivery) or Tier 0 (curl replays the signed bytes) and announces which.
+test-e2e-federation:
+    bash tests/e2e/run-federation.sh
+
 # Same, but also push uploads to gdrive:annexwyrm-test/ via rclone.
 # Requires `gdrive` to be a working rclone remote in ~/.config/rclone/rclone.conf.
 test-e2e-gdrive:
