@@ -59,14 +59,27 @@ trap cleanup EXIT INT TERM
 mkdir -p "$DATA"
 
 # ---------------------------------------------------------------------------
-#  build (assume `just build` already ran; check the binary is there)
+#  build — use the Nix package binary, the exact artifact home-manager
+#  deploys. We deliberately do NOT use the dev-shell `just build` here: on
+#  this darwin setup the dev shell's NIX_CFLAGS_COMPILE injects a mismatched
+#  libcxx `-isystem` ahead of the macOS SDK, which shadows <time.h> and
+#  breaks the csrc bridge compile; the sandboxed `nix build .#default` has a
+#  clean include path and is what actually ships. Set ANNEXWYRM_BINARY to
+#  point the harness at a specific binary (e.g. the deployed store path).
 # ---------------------------------------------------------------------------
 
-BINARY="$REPO/build/annexwyrm"
-if [ ! -x "$BINARY" ]; then
-    yellow "binary not found at $BINARY — running just build"
-    ( cd "$REPO" && just build )
+if [ -n "${ANNEXWYRM_BINARY:-}" ]; then
+    BINARY="$ANNEXWYRM_BINARY"
+else
+    note "building annexwyrm via nix build .#default"
+    ( cd "$REPO" && nix build .#default --out-link "$REPO/result" )
+    BINARY="$REPO/result/bin/annexwyrm"
 fi
+if [ ! -x "$BINARY" ]; then
+    red "binary not found / not executable: $BINARY"
+    exit 1
+fi
+note "using binary: $BINARY"
 
 # ---------------------------------------------------------------------------
 #  init + daemon

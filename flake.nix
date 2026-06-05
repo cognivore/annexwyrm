@@ -45,7 +45,15 @@
             koka
             just
             pkg-config
-            clang
+            # NB: do NOT add `clang` here. The standalone `pkgs.clang` package
+            # (a newer LLVM, e.g. clang-wrapper-21.1.8) is not wired to the
+            # macOS SDK the way the darwin stdenv's own cc-wrapper (21.1.2) is,
+            # so it can't resolve <time.h>/time_t and the build dies with
+            # "unknown type name 'time_t'" + implicit-declaration errors on the
+            # csrc bridge. Adding it also overrides NIX_CC via its setup hook,
+            # shadowing the working stdenv compiler that `nix build .#default`
+            # uses. Letting koka pick up the stdenv `cc` keeps dev and Nix
+            # builds on the same, SDK-integrated compiler.
             # Federation / storage runtime — required at *run* time, not
             # build, but we want them on PATH in the dev shell so the
             # daemon can call them.

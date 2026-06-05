@@ -38,7 +38,11 @@ stdenv.mkDerivation {
   installPhase = ''
     runHook preInstall
     mkdir -p $out/bin $out/share/annexwyrm
-    cp build/annexwyrm $out/bin/
+    # install -m555 (not a plain cp): koka's sandbox-emitted binary lands
+    # mode 0644, and a bare cp carries that through, so the store path ends
+    # up non-executable and the launchd serve agent dies with EACCES. Force
+    # the executable bit here.
+    install -m555 build/annexwyrm $out/bin/annexwyrm
     # Schema lives in the share dir; `annexwyrm init` reads it from there
     # by default but the path is also baked into the binary.
     cp sql/schema.sql $out/share/annexwyrm/

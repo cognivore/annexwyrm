@@ -43,6 +43,24 @@ non-obvious quirks worth flagging:
    - `--ccincdir` resolves relative to where the C compiler runs (under
      `.koka/.../cc-...`), not where `koka` was invoked from. The
      Justfile uses `$(pwd)/csrc` to make it absolute.
+   - **darwin dev-shell `just build` vs `nix build .#default`**: koka's
+     nixpkgs wrapper pins `CC=clang-wrapper-21.1.8`, so both paths use the
+     *same* compiler. But inside `nix develop` the aggregate
+     `NIX_CFLAGS_COMPILE` injects a `-isystem .../libcxx-…+apple-sdk-26.4/
+     include` ahead of the real `apple-sdk-14.4` sysroot. For a **C**
+     compile that stray libcxx dir shadows the SDK's `<time.h>`, so
+     `time_t`/`gmtime_r`/`strftime` come up undefined and the bridge fails
+     with "unknown type name 'time_t'" + implicit-declaration errors. The
+     sandboxed `nix build .#default` has a *minimal* `buildInputs` (no
+     stray libcxx), so its include path reaches the SDK cleanly and the
+     binary it produces is sound (verified: real ISO timestamps, RSA PEM,
+     argon2 login row). **Canonical build = `nix build .#default`.** The
+     e2e harness builds via that, not `just build`; `just build` may work
+     on other hosts but is not the source of truth here.
+   - `package.nix` installs the binary with `install -m555`, not `cp`:
+     koka's sandbox-emitted binary is mode 0644 and a bare `cp` leaves the
+     store path non-executable, so launchd's `serve` agent would die with
+     EACCES.
 
 What it took to get this far otherwise: changing all extern effects
 from `io` to `ndet` / `<ndet,net>` / `<ndet,fsys>`, single-clause `with

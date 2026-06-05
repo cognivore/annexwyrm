@@ -51,8 +51,14 @@ let
                 write_buffer 64KB
             }
         }
+        # Static assets ship inside the package's read-only store path, not
+        # the mutable data dir: `annexwyrm init` provisions the db + keypair
+        # under dataDir but deliberately does NOT copy `static/` there, and
+        # the daemon has no /static route (the route table's catch-all 404s).
+        # Serving from ${cfg.package}/share/annexwyrm/static keeps the CSS
+        # version-locked to the binary with no copy step and no staleness.
         handle_path /static/* {
-            root * ${cfg.dataDir}/static
+            root * ${cfg.package}/share/annexwyrm/static
             file_server
         }
         log {
