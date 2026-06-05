@@ -52,7 +52,8 @@ pub fun handle-login-post( req : request )
           )
           val resp = see-other("/")
           resp.with-header("Set-Cookie",
-            "session=" ++ tok ++ "; Path=/; HttpOnly; SameSite=Lax; Max-Age=1209600")
+            "session=" ++ tok ++ "; Path=/; HttpOnly; SameSite=Lax; Max-Age=1209600"
+            ++ secure-attr(req))
 
 pub fun handle-logout( req : request )
   : <db,log,config,div|e> response
@@ -62,7 +63,7 @@ pub fun handle-logout( req : request )
     ()
   val resp = see-other("/")
   resp.with-header("Set-Cookie",
-    "session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")
+    "session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0" ++ secure-attr(req))
 
 // ----------------------------------------------------------------------
 //  Form-encoded body parsing (application/x-www-form-urlencoded)
@@ -75,6 +76,16 @@ fun form-get( fs : list<(string,string)>, k : string ) : string
   match fs
     Nil -> ""
     Cons((k0,v), rest) -> if k0 == k then v else form-get(rest, k)
+
+// "; Secure" iff this request arrived over HTTPS. Caddy in front of the
+// daemon sets X-Forwarded-Proto; the tuntun-fronted public site pins it to
+// `https`, the local http:// dev site to `http`. Secure means "send only
+// over HTTPS", so adding it unconditionally would silently break login on
+// the http://annexwyrm.localhost dev path (the browser would drop the
+// cookie) — exactly the trap the previous CTO hit. Gate it on the scheme.
+fun secure-attr( req : request ) : string
+  if req.header("x-forwarded-proto").default("") == "https"
+    then "; Secure" else ""
 
 fun cookie-value( header-val : string, name : string ) : string
   header-val.split(";").map(fn(s) s.trim).flatmap(fn(p)

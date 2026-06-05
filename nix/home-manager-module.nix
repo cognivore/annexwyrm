@@ -36,9 +36,18 @@ let
   cfg = config.services.annexwyrm;
   inherit (lib) mkEnableOption mkOption mkIf types literalExpression;
 
-  # The site definition Caddy actually loads. Path is absolute so the
-  # daemon and Caddy agree on which Unix socket to share.
-  caddyfile = pkgs.writeText "annexwyrm.Caddyfile" ''
+  # Federation identity. When publicDomain is set (via a tuntun.nix
+  # registration), the actor id / base-URL / webfinger become
+  # https://<publicDomain> so remote servers can resolve and deliver to us;
+  # otherwise the instance is local-only at `domain`.
+  identityDomain  = if cfg.publicDomain != null then cfg.publicDomain else cfg.domain;
+  identityBaseUrl = if cfg.publicDomain != null
+                    then "https://${cfg.publicDomain}"
+                    else "http://${cfg.domain}";
+
+  # The local site music-box's Caddy loads, reverse-proxying the daemon's
+  # Unix socket. Absolute socket path so daemon and Caddy agree.
+  localSite = ''
     http://${cfg.domain} {
         encode zstd gzip
         # Caddyfile blocks require the `{` to end the line — `request_body {
@@ -73,6 +82,42 @@ let
     }
   '';
 
+  # When publicDomain is set, Caddy ALSO listens on the tuntun localPort.
+  # tuntun's server-side Caddy terminates TLS at https://${cfg.publicDomain}
+  # and forwards cleartext HTTP through the tunnel to this port, so we pin
+  # X-Forwarded-Proto=https (the daemon marks the session cookie Secure off
+  # it) and X-Forwarded-Host to the public name. tuntun.nix sets
+  # auth="public" so the AP actor/inbox/webfinger stay fetchable by remote
+  # servers; annexwyrm's own login still gates writes.
+  tunnelSite = lib.optionalString (cfg.publicDomain != null) ''
+
+    :${toString cfg.tunnelPort} {
+        encode zstd gzip
+        request_body {
+            max_size 4GB
+        }
+        reverse_proxy unix/${cfg.socket} {
+            header_up X-Forwarded-Host ${cfg.publicDomain}
+            header_up X-Forwarded-Proto https
+            transport http {
+                versions 1.1
+                read_buffer 64KB
+                write_buffer 64KB
+            }
+        }
+        handle_path /static/* {
+            root * ${cfg.package}/share/annexwyrm/static
+            file_server
+        }
+        log {
+            output file ${config.home.homeDirectory}/Caddy/logs/annexwyrm-public.log
+            format json
+        }
+    }
+  '';
+
+  caddyfile = pkgs.writeText "annexwyrm.Caddyfile" (localSite + tunnelSite);
+
   # Actor identity + data location, exported into the daemon's launchd
   # environment so `init` and `serve` (both run by serveScript below) agree
   # on who the local actor is. The original bug: init ran with none of
@@ -81,8 +126,8 @@ let
   # sweater@annexwyrm.localhost — login then failed (no matching actor row,
   # and local_login's FK to actor(id) silently rejected the password row).
   appEnv = {
-    ANNEXWYRM_DOMAIN        = cfg.domain;
-    ANNEXWYRM_BASE_URL      = "http://${cfg.domain}";
+    ANNEXWYRM_DOMAIN        = identityDomain;
+    ANNEXWYRM_BASE_URL      = identityBaseUrl;
     ANNEXWYRM_USERNAME      = cfg.username;
     ANNEXWYRM_INSTANCE_NAME = cfg.instanceName;
     ANNEXWYRM_SOCKET        = cfg.socket;
@@ -123,7 +168,30 @@ in
     domain = mkOption {
       type = types.str;
       default = "annexwyrm.localhost";
-      description = "Hostname Caddy will reverse-proxy to the daemon.";
+      description = "Local hostname Caddy reverse-proxies to the daemon.";
+    };
+
+    publicDomain = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "annexwyrm.sweater.fere.me";
+      description = ''
+        Public hostname this instance federates as — set when exposed via a
+        tuntun.nix registration. When non-null the actor identity / base-URL
+        / webfinger become https://<publicDomain>, and Caddy additionally
+        listens on `tunnelPort` (cleartext, X-Forwarded-Proto pinned https)
+        for the tuntun tunnel. Leave null for a local-only instance.
+      '';
+    };
+
+    tunnelPort = mkOption {
+      type = types.port;
+      default = 8730;
+      description = ''
+        Local TCP port Caddy listens on for the tuntun tunnel (the
+        `localPort` declared in tuntun.nix). Only used when publicDomain is
+        set; must match tuntun.nix.
+      '';
     };
 
     socket = mkOption {
