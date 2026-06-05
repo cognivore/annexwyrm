@@ -1,0 +1,63 @@
+// annexwyrm/web/html/home — / (the public archive list).
+
+module web/html/home
+
+import web/html/layout
+
+// One row in the homepage list — built by the handler, rendered here.
+// `rating` carries the unrated sentinel (99) when the item has no rating.
+pub value struct home-row
+  id          : string
+  name        : string
+  kind        : string
+  privacy     : string
+  rating      : int           // -3..3 or 99 = unrated
+  in-reply-to : string        // "" for top-level items
+  published   : string
+
+pub fun render-home( rows : list<home-row>, instance-name : string ) : string
+  val body = ([
+    "<h1>" ++ esc(instance-name) ++ "</h1>",
+    "<p class=\"subtitle\">a federated archive — pieces dropped here are mirrored, optionally shared.</p>",
+    items-list(rows)
+  ]).join("\n")
+  layout(instance-name, "", "<a href=\"/\">archive</a>", body)
+
+fun items-list( rows : list<home-row> ) : string
+  match rows
+    Nil -> "<p class=\"empty\">nothing public yet.</p>"
+    _   ->
+      "<ol class=\"items\">\n" ++
+      rows.map(item-row).join("\n") ++
+      "\n</ol>"
+
+fun item-row( r : home-row ) : string
+  val path = "/items/" ++ id-tail(r.id)
+  val rev  = if r.in-reply-to == "" then "" else " <span class=\"meta\">[review]</span>"
+  "<li class=\"item-row\">" ++
+    "<span class=\"kind\">[" ++ esc(r.kind.to-lower) ++ "]</span> " ++
+    row-rating(r.rating) ++
+    "<a class=\"title\" href=\"" ++ esc(path) ++ "\">" ++ esc-title(r.name) ++ "</a>" ++
+    rev ++
+    " <span class=\"meta\">" ++ esc(r.published) ++ " · " ++ esc(r.privacy) ++ "</span>" ++
+  "</li>"
+
+fun row-rating( r : int ) : string
+  if r < -3 || r > 3 then ""
+  else
+    val css = if r > 0 then "positive" elif r < 0 then "negative" else "neutral"
+    "<span class=\"rating " ++ css ++ "\">" ++ rating-show-pure(r) ++ "</span> "
+
+// Pure helper duplicated from annex/item to avoid a dependency cycle —
+// the html layer should not see the domain. Kept in sync by convention.
+fun rating-show-pure( r : int ) : string
+  if r > 0 then "[+" ++ r.show ++ "]"
+  elif r == 0 then "[ 0]"
+  else "[" ++ r.show ++ "]"
+
+fun esc-title( s : string ) : string
+  if s == "" then "(untitled)" else esc(s)
+
+// Last path segment of a full URL.  "https://x/items/abc" → "abc".
+fun id-tail( id : string ) : string
+  id.split("/").reverse.head.default(id)

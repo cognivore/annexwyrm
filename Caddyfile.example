@@ -1,0 +1,55 @@
+# Caddyfile.example — single-host annexwyrm in front of Caddy.
+#
+# Caddy terminates TLS (automatic via Let's Encrypt) and reverse-proxies
+# every request to the annexwyrm Unix socket. The daemon speaks plain
+# HTTP/1.1 over the socket; that's the entire integration.
+
+annexwyrm.example.com {
+        encode zstd gzip
+
+        # Cap uploads at 4 GiB. The daemon checks this again; this is the
+        # outer wall.
+        request_body {
+                max_size 4GB
+        }
+
+        # The actor URL and any object URL serves both HTML (for browsers)
+        # and JSON-LD (for federators). Content negotiation happens *inside*
+        # the daemon by looking at the Accept header; Caddy just hands the
+        # request along.
+        reverse_proxy unix//run/annexwyrm/sock {
+                header_up X-Forwarded-Host {host}
+                header_up X-Forwarded-Proto {scheme}
+                # Caddy normalises Host already; the daemon trusts it.
+                transport http {
+                        # Keep upload streams flowing; don't buffer the body
+                        # to disk inside Caddy.
+                        versions 1.1
+                        read_buffer 64KB
+                        write_buffer 64KB
+                }
+        }
+
+        # Static CSS lives next to the daemon; serve it without bothering
+        # the Koka process.
+        handle_path /static/* {
+                root * /var/lib/annexwyrm/static
+                file_server
+        }
+
+        log {
+                output file /var/log/caddy/annexwyrm.log
+                format json
+        }
+}
+
+# WebFinger lives at the bare domain when the actor uses
+# acct:you@bare.example.com — most fediverse instances put the bare
+# host as a second site that just proxies /.well-known/webfinger.
+#
+# Skip this block if the actor's @ domain already matches the site.
+#
+# example.com {
+#         @webfinger path /.well-known/webfinger /.well-known/host-meta /.well-known/nodeinfo
+#         reverse_proxy @webfinger unix//run/annexwyrm/sock
+# }

@@ -1,0 +1,21 @@
+# Nix
+result
+result-*
+
+# Koka build artifacts
+.koka/
+build/
+
+# Local data
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# direnv
+.direnv/
+
+# editor / OS
+.DS_Store
+*.swp

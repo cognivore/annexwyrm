@@ -1,0 +1,211 @@
+/* annexwyrm — minimal, dense, no JS.
+ *
+ * Aesthetic: Reddit v1 + textboard.  Cream background, narrow column,
+ * monospace for tags / metadata, serif for body text.
+ *
+ * No grid, no flexbox where a float would do, no animations.
+ */
+
+:root {
+    --bg:        #f3eed9;     /* cream */
+    --bg-alt:    #e9e2c4;     /* darker stripe */
+    --fg:        #1c1c1c;
+    --fg-mute:   #6b6b66;
+    --accent:    #6a2d1f;     /* maroon */
+    --link:      #364fc7;
+    --link-vis:  #5a3673;
+    --border:    #c4bf9d;
+    --warn:      #a72121;
+}
+
+html {
+    font: 14px/1.45 Georgia, "Times New Roman", serif;
+    color: var(--fg);
+    background: var(--bg);
+}
+
+body {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 0 12px;
+}
+
+a              { color: var(--link); text-decoration: none; }
+a:visited      { color: var(--link-vis); }
+a:hover        { text-decoration: underline; }
+
+h1, h2, h3 {
+    font-family: Georgia, "Times New Roman", serif;
+    font-weight: bold;
+    color: var(--accent);
+}
+
+h1 { font-size: 18px; margin: 14px 0 6px 0; }
+h2 { font-size: 15px; margin: 18px 0 4px 0; }
+h3 { font-size: 14px; margin: 14px 0 4px 0; }
+
+/* ----- header / footer ----- */
+
+header.top {
+    border-bottom: 1px solid var(--border);
+    padding: 6px 0;
+    margin-bottom: 10px;
+    display: block;
+}
+header.top .brand a {
+    color: var(--accent);
+    font-weight: bold;
+    text-transform: lowercase;
+}
+header.top .crumbs {
+    color: var(--fg-mute);
+    margin: 0 6px;
+}
+header.top .nav {
+    float: right;
+    font-size: 13px;
+}
+header.top::after { content: ""; display: table; clear: both; }
+
+footer {
+    margin: 24px 0 12px 0;
+    padding-top: 6px;
+    border-top: 1px solid var(--border);
+    color: var(--fg-mute);
+    font-size: 12px;
+}
+
+/* ----- the item list ----- */
+
+ol.items {
+    list-style: none;
+    margin: 8px 0;
+    padding: 0;
+}
+
+li.item-row {
+    padding: 3px 6px;
+    border-bottom: 1px dotted var(--border);
+}
+li.item-row:nth-child(odd) { background: var(--bg-alt); }
+
+.kind {
+    font-family: Menlo, Consolas, monospace;
+    color: var(--fg-mute);
+    margin-right: 4px;
+}
+.title  { font-weight: bold; }
+.meta   { color: var(--fg-mute); font-size: 12px; margin-left: 6px; }
+
+/* ----- actor profile ----- */
+
+.actor h1            { display: inline; }
+.actor .handle       { font-family: Menlo, Consolas, monospace; color: var(--fg-mute); font-weight: normal; font-size: 14px; }
+.actor .summary      { color: var(--fg); margin: 6px 0; }
+.actor-meta          { font-size: 12px; color: var(--fg-mute); }
+.actor-meta dt       { float: left; clear: left; width: 80px; }
+.actor-meta dd       { margin: 0 0 0 88px; }
+
+/* ----- single item ----- */
+
+article.item .meta {
+    color: var(--fg-mute);
+    font-size: 12px;
+    margin: 2px 0 10px 0;
+}
+article.item .meta > span { margin-right: 8px; }
+article.item .content {
+    margin: 12px 0;
+    line-height: 1.55;
+}
+article.item details.cw {
+    border-left: 3px solid var(--warn);
+    padding: 2px 8px;
+    margin: 8px 0;
+    background: var(--bg-alt);
+}
+
+/* ----- remotes (item mirrors) ----- */
+
+section.remotes ul   { list-style: none; padding: 0; margin: 6px 0; }
+.remote              { padding: 2px 0; }
+.remote .rkind {
+    display: inline-block;
+    min-width: 70px;
+    font-family: Menlo, Consolas, monospace;
+    color: var(--fg-mute);
+    font-size: 12px;
+}
+.remote.published    { font-weight: bold; }
+
+/* ----- forms ----- */
+
+fieldset {
+    border: 1px solid var(--border);
+    margin: 12px 0;
+    padding: 8px 12px;
+}
+legend       { font-weight: bold; padding: 0 4px; }
+label        { display: block; margin: 6px 0; }
+label > input,
+label > textarea,
+label > select {
+    width: 100%;
+    box-sizing: border-box;
+    font: inherit;
+    padding: 3px 4px;
+    border: 1px solid var(--border);
+    background: #fffbe6;
+}
+label > textarea { font-family: Menlo, Consolas, monospace; }
+button {
+    font: inherit;
+    padding: 4px 14px;
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    cursor: pointer;
+}
+button:hover { background: #d6cea1; }
+.hint { color: var(--fg-mute); font-size: 12px; margin: 4px 0; }
+
+.remote-row {
+    margin: 4px 0;
+    padding: 2px 0;
+    display: block;
+}
+.remote-row select,
+.remote-row input {
+    display: inline-block;
+    width: auto;
+    margin-right: 4px;
+}
+
+.err {
+    color: var(--warn);
+    font-weight: bold;
+}
+.subtitle { color: var(--fg-mute); font-style: italic; }
+.empty    { color: var(--fg-mute); font-style: italic; padding: 8px 0; }
+
+/* ----- ratings (the -3..+3 scale) ----- */
+
+.rating {
+    font-family: Menlo, Consolas, monospace;
+    font-size: 13px;
+    padding: 0 4px;
+    border: 1px solid var(--border);
+    background: #fffbe6;
+}
+.rating.positive { color: #18691a; border-color: #74b076; background: #ecf7ec; }
+.rating.negative { color: #962020; border-color: #c98c8c; background: #fceaea; }
+.rating.neutral  { color: var(--fg-mute); }
+.rating .stars   { letter-spacing: 0.6px; margin-left: 2px; }
+
+.review-of {
+    color: var(--fg-mute);
+    font-size: 12px;
+    font-style: italic;
+    border-left: 3px solid var(--border);
+    padding: 2px 8px;
+    margin: 4px 0;
+}
