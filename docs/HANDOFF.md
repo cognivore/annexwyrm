@@ -35,6 +35,17 @@ trust this edition.
 - `src/ap/outbox.kk`: **all seven** `emit-*` functions follow the #654-safe
   `build-*` (pure, `config`-only) + `ship-*` (effects, struct as parameter)
   split and return `()`. Adversarially reviewed for behavior drift.
+- **Public federation is LIVE** at `https://annexwyrm.sweater.fere.me`
+  (handle `@sweater@annexwyrm.sweater.fere.me`; webfinger + actor + key
+  resolve over a real Let's Encrypt cert). Wired via tuntun: the module's
+  `publicDomain` option flips the actor identity to https://<publicDomain>
+  and adds a second Caddy site on `tunnelPort` (8730) fronting the daemon
+  socket; `tuntun.nix` (`auth = "public"`) registers it (`tuntun register`).
+  Session cookie gains `Secure` on the HTTPS path. NOTE: first bringup was
+  blocked by the fere.me tuntun-server's stale Porkbun DNS key (server-wide
+  TLS failure); restored from rageveil `porkbun.com/api` → `/var/lib/tuntun-
+  secrets/` on the box (old files backed up `*.bak-20260605-2245`). If that
+  key reverts on a box redeploy, no tenant subdomain gets new certs.
 
 ## Hard-won facts — get these wrong and you lose a day
 
