@@ -149,3 +149,158 @@ wait_for_socket() {
     red "socket $sock did not come up within ${timeout}s"
     return 1
 }
+
+# ===========================================================================
+#  TCP / Caddy-fronted helpers.
+#
+#  run.sh talks to the daemon over its Unix socket. run-caddy.sh talks to
+#  Caddy over TCP (http://127.0.0.1:PORT). These helpers are the TCP twins
+#  of the socket helpers above. They differ in three macOS-critical ways:
+#
+#    1. Every request MUST send `Host: $CADDY_HOST`, because we connect by
+#       IP:port but Caddy keys its site block on the hostname.
+#    2. Header parsing is case-insensitive via `grep -i`, NOT the
+#       `awk 'BEGIN{IGNORECASE=1}'` trick in `upload` above — BSD awk has no
+#       IGNORECASE and silently ignores it, so it would miss Caddy's
+#       capitalised `Location:` / `Via:` headers.
+#    3. We assert the `Via: …Caddy` header to *prove* the request was proxied
+#       and did not accidentally hit the socket.
+#
+#  Callers MUST export CADDY_BASE (e.g. "http://127.0.0.1:54321") and
+#  CADDY_HOST (e.g. "annexwyrm.localhost") before using these.
+# ===========================================================================
+
+# Base curl wrapper: bakes in the Host header and silent/show-error flags.
+# Usage: caddy_curl <curl-args...>   (URLs are passed as $CADDY_BASE<path>)
+caddy_curl() {
+    curl --silent --show-error -H "Host: ${CADDY_HOST}" "$@"
+}
+
+# Lower-case a header dump so downstream greps can use lower-case literals
+# regardless of Caddy's capitalisation. (BSD `tr`, no locale surprises.)
+_lc() { tr '[:upper:]' '[:lower:]'; }
+
+# `assert_status_tcp PATH EXPECTED [LABEL]` — GET PATH through Caddy, anon.
+assert_status_tcp() {
+    local path="$1" expected="$2"
+    local label="${3:-$path}"
+    local code
+    code=$(caddy_curl --output /dev/null --write-out '%{http_code}' \
+                "${CADDY_BASE}${path}" || true)
+    if [ "$code" != "$expected" ]; then
+        red "expected $expected for $path, got $code"
+        return 1
+    fi
+    green "  ✓ $path → $code"
+}
+
+# `dump_headers_tcp PATH [JAR]` — print the response headers for PATH.
+# If JAR is given and non-empty, send it as the cookie jar.
+dump_headers_tcp() {
+    local path="$1" jar="${2:-}"
+    # Fetch with -D - (dump headers to stdout) on a normal GET, discarding the
+    # body, rather than HEAD — several routes do not implement HEAD.
+    local args=(--silent --show-error --output /dev/null --dump-header -)
+    if [ -n "$jar" ]; then
+        caddy_curl "${args[@]}" --cookie "$jar" "${CADDY_BASE}${path}"
+    else
+        caddy_curl "${args[@]}" "${CADDY_BASE}${path}"
+    fi
+}
+
+# `assert_via_caddy HEADERS LABEL` — fail unless the header dump proves the
+# response came through Caddy (`Via: 1.1 Caddy`, case-insensitive).
+assert_via_caddy() {
+    local headers="$1" label="${2:-via}"
+    if printf '%s' "$headers" | _lc | grep -q '^via:.*caddy'; then
+        green "  ✓ $label proxied through Caddy (Via header present)"
+    else
+        red "missing Via: …Caddy header ($label) — response may not be proxied"
+        printf '%s\n' "$headers" | head -40 >&2
+        return 1
+    fi
+}
+
+# `header_value HEADERS NAME` — echo the value of header NAME from a header
+# dump, case-insensitively, with the trailing CR stripped. Empty if absent.
+header_value() {
+    local headers="$1" name="$2"
+    printf '%s\n' "$headers" \
+        | grep -i "^${name}:" \
+        | head -1 \
+        | sed -E "s/^[^:]*:[[:space:]]*//" \
+        | tr -d '\r'
+}
+
+# `fetch_html_tcp PATH JAR` — fetch rendered HTML at PATH using cookie JAR.
+fetch_html_tcp() {
+    local path="$1" jar="${2:-}"
+    if [ -n "$jar" ]; then
+        caddy_curl --cookie "$jar" "${CADDY_BASE}${path}"
+    else
+        caddy_curl "${CADDY_BASE}${path}"
+    fi
+}
+
+# `fetch_html_anon_tcp PATH` — fetch rendered HTML at PATH with no cookies.
+fetch_html_anon_tcp() {
+    local path="$1"
+    caddy_curl "${CADDY_BASE}${path}"
+}
+
+# Upload a file via multipart/form-data THROUGH CADDY. Same field discipline
+# as the socket `upload` (--form-string for literals, -F only for the file),
+# but parses the Location header case-insensitively (BSD-awk-proof).
+#
+# RETURNS VIA GLOBALS, deliberately: UPLOAD_LOCATION (the redirect path) and
+# UPLOAD_HEADERS (the full header dump, for Via / Set-Cookie assertions).
+# Call it as a plain statement — NEVER inside `$( … )` command substitution:
+# that runs the function in a subshell, the globals die with the subshell,
+# and under `set -u` the caller explodes with "unbound variable".
+#
+# The file part is sent with an explicit `;type=` so the daemon records a
+# deterministic media_type instead of relying on libcurl's extension→MIME
+# guess (which varies by platform/libmagic). Defaults to application/pdf,
+# matching this suite's PDFs.
+#
+# Args: jar file_path title summary content privacy rating in_reply_to [type]
+# Sets UPLOAD_LOCATION + UPLOAD_HEADERS.
+upload_tcp() {
+    local jar="$1" file="$2"
+    local title="$3" summary="$4" content="$5"
+    local privacy="$6" rating="$7" in_reply_to="$8"
+    local mime="${9:-application/pdf}"
+
+    local form_args=(
+        -F            "file=@$file;type=$mime"
+        --form-string "name=$title"
+        --form-string "summary=$summary"
+        --form-string "content=$content"
+        --form-string "privacy=$privacy"
+        --form-string "rating=$rating"
+        --form-string "in_reply_to=$in_reply_to"
+    )
+
+    local tmp_headers tmp_body
+    tmp_headers=$(mktemp)
+    tmp_body=$(mktemp)
+    # No -L: we want to inspect the 303 + Location, not follow it.
+    caddy_curl \
+        --cookie "$jar" \
+        --dump-header "$tmp_headers" \
+        --output "$tmp_body" \
+        "${form_args[@]}" \
+        "${CADDY_BASE}/upload" >&2
+    UPLOAD_HEADERS="$(cat "$tmp_headers")"
+    UPLOAD_LOCATION=$(header_value "$UPLOAD_HEADERS" "location")
+    if [ -z "$UPLOAD_LOCATION" ]; then
+        red "upload_tcp: no Location header in response"
+        yellow "headers:"
+        cat "$tmp_headers" >&2 || true
+        yellow "body (first 30 lines):"
+        head -30 "$tmp_body" >&2 || true
+        rm -f "$tmp_headers" "$tmp_body"
+        return 1
+    fi
+    rm -f "$tmp_headers" "$tmp_body"
+}

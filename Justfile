@@ -79,6 +79,14 @@ show-c MODULE='annexwyrm':
 test-e2e:
     bash tests/e2e/run.sh
 
+# Run the Caddy-fronted end-to-end test: starts an ISOLATED Caddy on a
+# probed-free TCP port (its own admin port, never the user's :2019) in front
+# of a temp-socket daemon, and drives the full journey over http://127.0.0.1.
+# Catches the four reverse-proxy bugs (static 404, invalid Caddyfile, wrong
+# init identity, Secure cookie over http) that run.sh cannot see.
+test-e2e-caddy:
+    bash tests/e2e/run-caddy.sh
+
 # Same, but also push uploads to gdrive:annexwyrm-test/ via rclone.
 # Requires `gdrive` to be a working rclone remote in ~/.config/rclone/rclone.conf.
 test-e2e-gdrive:
