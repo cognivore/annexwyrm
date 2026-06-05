@@ -57,6 +57,18 @@ non-obvious quirks worth flagging:
      argon2 login row). **Canonical build = `nix build .#default`.** The
      e2e harness builds via that, not `just build`; `just build` may work
      on other hosts but is not the source of truth here.
+   - **Linux/gcc portability (surfaced deploying to Ubuntu chat.md110.se;
+     clang-on-darwin masked both):**
+     - The C bridge header MUST NOT be named `annexwyrm.h` — koka generates
+       a module header `annexwyrm.h` for `src/annexwyrm.kk` into the same cc
+       builddir as the generated `interp_*.c`, so a quote-include of
+       `"annexwyrm.h"` resolves to koka's module header, not the bridge's
+       (aw_* + <time.h> vanish). It's now `csrc/aw_bridge.h`. Don't rename
+       it back, and don't add a koka module whose name collides with a csrc
+       header.
+     - No C identifier may be named `unix`: gcc predefines the macro
+       `unix`=1 on Linux, so `int unix` becomes `int 1`. The time effect's
+       param is `epoch`, not `unix`.
    - `package.nix` installs the binary with `install -m555`, not `cp`:
      koka's sandbox-emitted binary is mode 0644 and a bare `cp` leaves the
      store path non-executable, so launchd's `serve` agent would die with

@@ -35,7 +35,19 @@ trust this edition.
 - `src/ap/outbox.kk`: **all seven** `emit-*` functions follow the #654-safe
   `build-*` (pure, `config`-only) + `ship-*` (effects, struct as parameter)
   split and return `()`. Adversarially reviewed for behavior drift.
-- **Public federation is LIVE** at `https://annexwyrm.sweater.fere.me`
+- **PERMANENT production is LIVE** at `https://wyrm.fere.me` (handle
+  `@sweater@wyrm.fere.me`) — 24/7 on the cube box `root@chat.md110.se`
+  (Ubuntu, no nix), independent of any laptop. Built NATIVELY on the server
+  (official koka 3.2.3 linux-x64 in /usr/local + apt libsqlite3/ssl/curl/
+  argon2), served by the `annexwyrm` systemd unit on /run/annexwyrm/sock
+  behind nginx (`/etc/nginx/sites-enabled/wyrm-fere`, :443 → unix socket)
+  with a certbot Let's Encrypt cert. Login password in `/etc/annexwyrm/env`
+  (root 600, from rageveil). Redeploy with `./deploy.sh` (rsync → /opt/
+  annexwyrm, koka build, restart) — mirrors north-london-cube-community.
+  Data in `/var/lib/annexwyrm` (outside the rsync target). Porkbun A record
+  `wyrm.fere.me → 46.62.199.15`.
+- A second public instance also exists on the LAPTOP via tuntun at
+  `https://annexwyrm.sweater.fere.me`
   (handle `@sweater@annexwyrm.sweater.fere.me`; webfinger + actor + key
   resolve over a real Let's Encrypt cert). Wired via tuntun: the module's
   `publicDomain` option flips the actor identity to https://<publicDomain>
