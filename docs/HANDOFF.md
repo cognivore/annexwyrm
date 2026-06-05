@@ -1,240 +1,144 @@
 # annexwyrm — CTO handoff
 
-You are taking over from the previous CTO. Read this entire file before
-touching any code.
+You are taking over a **live, deployed** service. Read this entire file
+before touching any code. The previous edition of this handoff described a
+pre-deployment state and contained several errors, all corrected below —
+trust this edition.
 
-## What works right now
+## What works right now (verified, not claimed)
 
-- `just build` green inside `nix develop`. Binary at `./build/annexwyrm`.
-- `just test-e2e` green: 11/11 assertions through a temp Unix socket.
-  Exercises login, two uploads (public PDF + private PDF), two reviews
-  with cross-links and `-3..+3` ratings, anonymous browse asserts 404
-  on the private item and 200 on the public.
-- Two commits on `origin/main`:
-  - `638cb6d` — initial drop (with #654 workaround using reference `struct`s)
-  - `6b86396` — restored `value struct`s; idiomatic emit-* split
+- **`http://annexwyrm.localhost/` is live in production** on this machine:
+  music-box Caddy (`com.localhost.caddy`) reverse-proxies to the daemon's
+  Unix socket; the daemon runs as launchd agent
+  `org.nix-community.home.annexwyrm`, deployed declaratively via
+  `~/Github/nixvana/home-manager` (`services.annexwyrm` in
+  `septnesis/home.nix`, mirroring `services.zensurance`).
+- Login (`sweater`), styled pages, public/private PDF uploads, reviews with
+  `-3..+3` ratings, cross-links, logout — all verified through the real
+  Caddy→socket path, plus a human browser pass.
+- The login password lives in **rageveil** at
+  `annexwyrm.localhost/sweater/password` — never in the nix store. The
+  launchd agent's `serveScript` resolves it with `rageveil show` at every
+  (re)start and applies it via idempotent `annexwyrm init`. Rotate with
+  `rageveil insert <key>` + `launchctl kickstart -k
+  gui/$(id -u)/org.nix-community.home.annexwyrm`.
+- **Three e2e suites** (`just --list`):
+  - `test-e2e` — socket-direct: ingest, reviews, anonymous authz, plus the
+    publish/unpublish federation-emission journey (61 assertions).
+    Spec: `tests/e2e/SPEC-publish.md`.
+  - `test-e2e-caddy` — an isolated Caddy on probed-free ports fronting a
+    temp daemon; the full user journey over TCP incl. static CSS, cookie
+    attributes, Via-header proxy proof (110 assertions).
+    Spec: `tests/e2e/SPEC-caddy.md`.
+  - `test-e2e-federation` — two live instances over S2S (landing with
+    priority 3). Spec: `tests/e2e/SPEC-federation.md`.
+- `src/ap/outbox.kk`: **all seven** `emit-*` functions follow the #654-safe
+  `build-*` (pure, `config`-only) + `ship-*` (effects, struct as parameter)
+  split and return `()`. Adversarially reviewed for behavior drift.
 
-## What does NOT work / is unverified
+## Hard-won facts — get these wrong and you lose a day
 
-1. **`http://annexwyrm.localhost` through music-box-managed Caddy** —
-   the most important thing left. The integration is **NOT** a manual
-   symlink into `~/Caddy/sites/`. That directory is materialised by
-   home-manager via `home.file.…source` — every entry in there is a
-   symlink into `/nix/store/.../home-manager-files/Caddy/sites/`. The
-   correct integration path goes through
-   **`~/Github/nixvana/home-manager/`**, exactly the same way
-   `services.zensurance` is wired. See "Priority 1" below for the
-   step-by-step.
-2. **The delivery worker is wired in code but no background loop drains
-   the queue.** `serve-loop` accepts requests and dispatches; nothing
-   yet calls `drain-deliveries` between accept() calls. Pending
-   activities sit in `delivery` rows forever.
-3. **`emit-delete`, `emit-follow`, `emit-undo-follow`, `emit-like`,
-   `emit-announce` still use the construct-then-tail-effect pattern in
-   one body.** They compile *today*, but the same minor edit (e.g.
-   adding one more effect op in the tail) can trip
-   koka-lang/koka#654 the same way `emit-create` did. Apply the
-   `build-*` + `ship-activity` split preemptively.
-4. **Google Drive e2e (`just test-e2e-gdrive`) was never run.** The
-   rclone path is wired and the user has `gdrive` configured in their
-   `~/.config/rclone/rclone.conf`, but nobody has watched a real PDF
-   land in `gdrive:annexwyrm-test/`. The MCP Google Drive tools were
-   not consulted to confirm.
-5. **SQL has no column-typed accessors.** `db` effect is correctly
-   marked everywhere; injection is structurally impossible (the C
-   bridge uses `sqlite3_bind_*` with `SQLITE_TRANSIENT`); but column
-   index drift will silently misread rows. Per-table accessor modules
-   planned, not started.
-6. **Argon2id falls back to PBKDF2-SHA256 unless libargon2 headers are
-   detected at C compile time.** The Nix shell ships `libargon2`; the
-   `__has_include(<argon2.h>)` guard in `csrc/crypto_bridge.c` should
-   succeed but has not been verified by reading the generated `.o`.
+1. **Canonical build = `nix build .#default`.** The dev-shell `just build`
+   is broken on this darwin host: the shell's `NIX_CFLAGS_COMPILE` injects
+   a mismatched `libcxx+apple-sdk-26.4 -isystem` ahead of the
+   `apple-sdk-14.4` sysroot, shadowing `<time.h>` for the C bridge
+   (koka's nixpkgs wrapper pins `CC=clang-wrapper-21.1.8` in BOTH paths —
+   the compiler was never the difference). The e2e suites build via
+   `nix build` for this reason; they also honor `ANNEXWYRM_BINARY`.
+2. **annexwyrm requires koka 3.2.3 and must NOT follow nixvana's nixpkgs.**
+   nixos-unstable ships koka 3.2.2, whose C codegen omits the bridge
+   header includes (`time_t`/`aw_cstr` undefined → hard errors). The
+   nixvana input is deliberately `annexwyrm.url = "github:cognivore/
+   annexwyrm";` with **no** `inputs.nixpkgs.follows` — there is a comment
+   in nixvana's flake.nix saying so. Do not "fix" it.
+3. **A git-backed flake ships tracked files only.** A brand-new file that
+   isn't `git add`ed is invisible to `nix build` — the failure mode is
+   koka's "unable to read external file" on a file that plainly exists.
+4. **Daemon logs go to stderr, flushed per line** (`csrc/log_bridge.c`).
+   They used to go to stdout via `println`, which is fully buffered when
+   redirected — production `daemon.log` was permanently empty and you
+   could not debug a running daemon. Launchd ops read
+   `~/.local/share/annexwyrm/daemon.err`.
+5. **Caddyfile blocks need `{` to end the line.** The one-line
+   `request_body { max_size 4GB }` is a parse error that kept Caddy from
+   loading at all (it crash-looped with exit 1). `caddy validate
+   --adapter caddyfile` before shipping any Caddyfile change.
+6. **`init` and `serve` must run with the same identity env**
+   (`ANNEXWYRM_DOMAIN/BASE_URL/USERNAME/...`). Without it, init mints the
+   config_env default actor (`alice@annexwyrm.local`, https) while the
+   daemon serves a different identity; login fails and `local_login`'s FK
+   to `actor(id)` silently rejects the password row (`exec` return codes
+   are ignored). The home-manager module's `serveScript` + shared `appEnv`
+   make drift impossible — keep it that way.
+7. **Static assets are served by Caddy from the package store path**
+   (`${pkg}/share/annexwyrm/static`), never the data dir (nothing
+   populates a data-dir static/, and the daemon has no `/static` route —
+   the router's catch-all 404s).
+8. **`install -m555`, not `cp`, in package.nix's installPhase** — koka's
+   sandbox-emitted binary is 0644 and a bare `cp` ships a non-executable
+   store path (launchd EACCES).
+9. **macOS test-shell traps:** BSD awk silently ignores `IGNORECASE`
+   (Caddy capitalizes `Location:`/`Via:` — parse headers with `grep -i`);
+   `curl -F` treats `<`/`@` as file directives (use `--form-string` for
+   literals); functions returning results via globals must not be called
+   in `$( … )` command substitution (subshell + `set -u` = unbound
+   variable).
+10. Koka quirks live in `NOTES.md`: #654 and the build/ship idiom,
+    pervasive `div` annotations, `--cclib`/`--ccincdir` semantics,
+    keywords (`raw`/`pub`/`handle`), no dash-digit identifier endings.
 
-## The five mistakes the previous CTO made
+## koka-lang/koka#654 status
 
-If you find yourself doing any of these again, stop and back out.
+Still open, no fix in `dev` (the 3.2.4–3.2.7 bumps are version-only). The
+idiomatic `build-*` + `ship-*` split — now applied to every `emit-*` — is
+the fix. If the issue ever lands a real fix, revisit whether the builders
+can be inlined; until then, never construct a mixed raw/ref value struct
+and run a multi-effect tail in the same body, and never return a
+just-built value struct from an effectful function. Poll the issue
+occasionally: https://github.com/koka-lang/koka/issues/654
 
-0. **Wrote a standalone `nix/annexwyrm.Caddyfile` and a README block
-   saying "symlink this into `~/Caddy/sites/`".** That was a hack
-   — `~/Caddy/sites/` is a home-manager-managed directory; everything
-   in it is a store symlink put there by `home.file."…".source`. The
-   right path is `services.annexwyrm` declared in
-   `~/Github/nixvana/home-manager/septnesis/home.nix`, mirroring
-   `services.zensurance` exactly. The home-manager module is now
-   shipped in `nix/home-manager-module.nix` and exposed via
-   `flake.outputs.homeManagerModules.default`. The Caddyfile snippet
-   under `nix/annexwyrm.Caddyfile` is the *template* the module's
-   `pkgs.writeText` derives from; nobody should symlink it manually.
+## Priority order (updated)
 
-1. **Started reaching for `--cclibs`, `--ccinc=csrc`, plain `-l...`
-   strings.** All wrong. Koka's flag names are `--cclib="a;b;c"`
-   (semicolon-separated, NO `-l` prefix) and `--ccincdir=...` (which
-   resolves *relative to where the C compiler runs*, deep under
-   `.koka/v3.2.3/cc-...`, NOT where `koka` was invoked). The Justfile
-   uses `--ccincdir="$(pwd)/csrc"` so it stays absolute.
+1. **Land priority 3: delivery drain + federation proof.** The wiring
+   (poll-timeout `accept` + `tick` callback in `serve-loop`, `annexwyrm
+   drain` CLI) and the two-instance federation e2e. Until this is green,
+   annexwyrm is an excellent local archive and an unproven fediverse
+   citizen: activities queue in `delivery` and go nowhere.
+2. **Re-deploy production** after p3 (relock the nixvana input +
+   `home-manager switch` + kick Caddy and the agent) — the deployed binary
+   predates the stderr-log fix and the outbox refactor.
+3. **Outbound remote-actor fetch.** `emit-follow` assumes the target's
+   inbox is already cached in `actor`; nothing populates it for outbound
+   follows of never-seen actors (the federation e2e documents the seam).
+   Wire webfinger + actor fetch into the follow path.
+4. **Google Drive e2e** (`ANNEXWYRM_E2E_GDRIVE=1 just test-e2e-gdrive`) —
+   still never run against the real `gdrive` rclone remote.
+5. **Per-table typed SQL accessors** (`src/annex/item_db.kk`, …) — the
+   column-index-drift protection NOTES.md outlines. Not started.
 
-2. **Demoted `ap-activity` / `ap-object` to reference `struct` before
-   trying the idiomatic split.** Per Plyb's note in
-   koka-lang/koka#654, that *does* work but it loses the value-struct
-   semantics for ~half the AP domain. The right fix is the
-   `build-create-activity` + `ship-activity` shape now in
-   `src/ap/outbox.kk`: pure helper constructs the value struct in a
-   `config`-only effect row; the multi-effect tail receives it as a
-   parameter; the synthetic `@mlift-emit-*` lambda's closure carries
-   only primitives. Matches `lib/std/time/date.kk`. Use this anywhere
-   you sequence "build value struct → multiple effect ops" again.
+## Process conventions (unchanged, plus what's now established)
 
-3. **Sent `curl -F "content=<p>…"` in the e2e harness without knowing
-   `<` is curl's file-read directive.** Burned an hour chasing curl
-   error 26 ("Failed to open/read local data") that was actually curl
-   trying to open a file named `p>A document…`. Fix: in
-   `tests/e2e/lib.sh`, only the file upload uses `-F`; every literal
-   field uses `--form-string` (also escapes `@`, the file-attach
-   directive, for free).
-
-4. **Set `Secure;` on the session cookie before checking the dev
-   path.** `Secure` means "send only over HTTPS"; dev talks `http://`
-   to the Unix socket, so curl silently drops the cookie and every
-   protected POST gets 403. The session cookie no longer has `Secure`
-   — when you put Caddy in front for production, *Caddy* terminates
-   TLS and you add `Secure` back at the reverse-proxy header level, or
-   re-add it conditionally in Koka after reading `X-Forwarded-Proto`.
-
-## The Koka fix that's ready to consume
-
-There isn't one yet — koka-lang/koka#654 is open, no maintainer
-response on the thread (as of last check), and `git log v3.2.3..dev --
-src/Kind/Repr.hs` in `~/Github/koka` is empty. The dev branch's
-package.yaml bump to 3.2.4–3.2.7 is a version-number-only change.
-**Building Koka from `dev` will NOT fix this.** The idiomatic split
-(see mistake #2) is the path.
-
-If you want to keep tabs: poll the issue at
-https://github.com/koka-lang/koka/issues/654 once a week. If a fix
-lands, revisit `src/ap/outbox.kk` and see whether the
-`build-create-activity` indirection is still earning its keep or can
-be inlined.
-
-## Priority order
-
-1. **Wire annexwyrm into `~/Github/nixvana/home-manager/` and verify
-   `http://annexwyrm.localhost` end-to-end.** This is *the* deliverable
-   you are inheriting. Everything else is downstream of it.
-
-   Concrete steps (mirror `services.zensurance` exactly):
-
-   a. In `~/Github/nixvana/home-manager/flake.nix` `inputs`, add:
-      ```
-      annexwyrm.url = "github:cognivore/annexwyrm";
-      annexwyrm.inputs.nixpkgs.follows = "nixpkgs";
-      ```
-      and add `annexwyrm` to the `outputs = inputs@{ … }:` argument list.
-
-   b. In the `septnesis = mkHM { … }` block (around `flake.nix:212`),
-      add to `modules`:
-      ```
-      annexwyrm.homeManagerModules.default
-      ```
-      next to `zensurance.homeManagerModules.default`.
-
-   c. In `~/Github/nixvana/home-manager/septnesis/home.nix`, next to
-      the `services.zensurance = { … };` block, add:
-      ```nix
-      services.annexwyrm = {
-        enable        = true;
-        domain        = "annexwyrm.localhost";
-        username      = "sweater";
-        instanceName  = "sweater's archive";
-        # `socket`, `dataDir`, `package` have sensible defaults.
-      };
-      ```
-
-   d. `cd ~/Github/nixvana/home-manager && home-manager switch --flake .#septnesis`.
-
-   e. After the switch, `~/Caddy/sites/annexwyrm.Caddyfile` is a
-      symlink into the nix store; the daemon launchd agent is
-      registered; the data dir is provisioned and `annexwyrm init`
-      has run. Kick Caddy (`launchctl kickstart -k
-      gui/$(id -u)/com.memorici.caddy`) and the launchd agent
-      (`launchctl kickstart -k gui/$(id -u)/sh.memorici.annexwyrm`,
-      adjust label as music-box names it).
-
-   The annexwyrm side of this is already done: `nix/home-manager-
-   module.nix` exposes `services.annexwyrm.{enable,domain,socket,
-   dataDir,username,instanceName,package}`; the flake exposes it as
-   `homeManagerModules.default`; verify with `nix flake show .` from
-   the annexwyrm repo (the entry is annotated "unknown flake output"
-   by Nix — that's fine, same as every other home-manager flake in
-   the fleet).
-
-   Acceptance criterion: a real browser hits
-   `http://annexwyrm.localhost/`, the homepage HTML loads; logging in
-   via the form works; uploading a PDF works; `/items/<id>` shows the
-   rating badge and the review-of preamble; logout works. **Run this
-   from a browser, not curl** — that's the only way to catch real-
-   world cookie / redirect / CSP / charset gotchas.
-2. **Apply the idiomatic split (`build-*` + `ship-activity`)
-   preemptively to `emit-delete`, `emit-follow`, `emit-undo-follow`,
-   `emit-like`, `emit-announce` in `src/ap/outbox.kk`.** They compile
-   today but are one effect-op away from #654 again.
-3. **Wire `drain-deliveries` into the serve loop.** Either a tick
-   every N requests inside `serve-go` (cheap, works without threads),
-   or a separate launchd agent that runs `annexwyrm drain`
-   periodically. The function is ready; nothing calls it.
-4. **Verify Google Drive end-to-end** with `ANNEXWYRM_E2E_GDRIVE=1
-   just test-e2e-gdrive`, then cross-check with the MCP Google Drive
-   `search_files` tool that the PDFs landed under `annexwyrm-test/`.
-5. **Per-table typed SQL accessors.** New modules
-   `src/annex/item_db.kk`, `src/ap/follow_db.kk`, etc. Each `query` /
-   `exec` call site moves into a typed function. Catches column-index
-   drift. NOTES.md outlines this.
-
-## How to run e2e (the two-subagent pattern)
-
-System-level testing is the real check. For each new e2e scenario:
-
-1. Launch a **Product Manager subagent** (channeling Steve Jobs) and
-   ask them to write the e2e *specification* — what the user should see
-   on the screen at each step, what the daemon should log, what the
-   database should hold. Specification, not code. Read it. Push back on
-   anything vague.
-2. Launch a **Programmer subagent** (channeling Phil Wadler / Conal
-   Elliott — types, totality, equational reasoning) to implement the
-   bash + curl test in `tests/e2e/` against the PM's spec. Insist on:
-   - explicit assertions (`assert_grep`, `assert_status`) rather than
-     "if it didn't crash, ship";
-   - cleanup via `trap`;
-   - opt-in for external services (`ANNEXWYRM_E2E_GDRIVE=1` style).
-
-Read both outputs. Reconcile. Run. Commit only when green.
-
-Use `/loop 1h` to keep cadence between supervision passes.
-
-## Repo / process conventions
-
-- `just --list` shows every recipe. Don't add a recipe outside Just.
-- Nix only. No `brew install`, no `pip install`. Add to `flake.nix`.
-- Two-commit-per-pull convention: one for behaviour, one for tests.
-  (We violated this in the initial drop — large monorepo seed — but
-  follow it going forward.)
-- Commit messages explain *why*, not *what*. See `6b86396`.
-- No GPG signing required (`git config commit.gpgsign` is not set
-  globally); push goes through SSH key `git@github.com:cognivore/...`.
-
-## Files worth reading first
-
-- `NOTES.md` — the three Koka-3.2.3 quirks (genLambda, div annotations,
-  C-bridge gotchas) with concrete fixes.
-- `README.md` — architecture, Nix workflow, Caddy integration, design
-  rules.
-- `nix/annexwyrm.Caddyfile` — the music-box-shaped site config.
-- `tests/e2e/run.sh` — the existing harness; mirror its structure for
-  the new Caddy-fronted scenarios.
-- `src/ap/outbox.kk` — the idiomatic emit-* pattern; replicate.
+- `just --list` is the catalog. Nix only — no brew/pip. Two commits per
+  change: behaviour, then tests. Messages explain *why* (see `92b159b`,
+  `08a621d`). Push to `origin/main` over SSH.
+- **E2e is spec-first, two-subagent:** a product-manager pass writes the
+  normative spec (`tests/e2e/SPEC-*.md` — three exist; match their
+  rigor: every step asserts (a) what the client sees, (b) what the daemon
+  logs, (c) what the DB holds), then an engineer implements against it,
+  then the supervisor runs, reconciles, and commits only when green.
+  This pattern has caught a real production bug every time it ran.
+- Adversarially review refactors (instruct the reviewer to *refute*).
+  The reviewer's "I cannot refute, and here is what convinced me" is the
+  bar.
 
 ## Final word
 
-The hard parts are done: Final-Tagless effect lattice, AP S2S
-federation, hand-rolled JSON parser, the C bridge, the Nix flake. The
-remaining work is plumbing and confidence-building. Don't get clever
-where the previous CTO already got burned.
+The hard parts remain done — the effect lattice, the AP domain, the C
+bridge, the Nix plumbing — and the service is now actually deployed and
+guarded by 171+ assertions. The remaining work is making federation real
+(priorities 1–3 above) and the confidence-building around it. The
+previous edition of this file warned: don't get clever where your
+predecessor got burned. Amendment from the field: the burns were all in
+the gap between "compiles" and "serves a styled page to a human through
+the real proxy" — keep the e2e suites merciless and that gap stays
+closed.
