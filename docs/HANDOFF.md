@@ -17,10 +17,14 @@ touching any code.
 ## What does NOT work / is unverified
 
 1. **`http://annexwyrm.localhost` through music-box-managed Caddy** —
-   the most important thing left. `nix/annexwyrm.Caddyfile` is written
-   but has not been symlinked into `~/Caddy/sites/`, Caddy has not been
-   reloaded, and the daemon has not been pointed at the matching socket
-   path (`~/.local/share/annexwyrm/sock`). This is **priority 1**.
+   the most important thing left. The integration is **NOT** a manual
+   symlink into `~/Caddy/sites/`. That directory is materialised by
+   home-manager via `home.file.…source` — every entry in there is a
+   symlink into `/nix/store/.../home-manager-files/Caddy/sites/`. The
+   correct integration path goes through
+   **`~/Github/nixvana/home-manager/`**, exactly the same way
+   `services.zensurance` is wired. See "Priority 1" below for the
+   step-by-step.
 2. **The delivery worker is wired in code but no background loop drains
    the queue.** `serve-loop` accepts requests and dispatches; nothing
    yet calls `drain-deliveries` between accept() calls. Pending
@@ -46,9 +50,21 @@ touching any code.
    `__has_include(<argon2.h>)` guard in `csrc/crypto_bridge.c` should
    succeed but has not been verified by reading the generated `.o`.
 
-## The four mistakes the previous CTO made
+## The five mistakes the previous CTO made
 
 If you find yourself doing any of these again, stop and back out.
+
+0. **Wrote a standalone `nix/annexwyrm.Caddyfile` and a README block
+   saying "symlink this into `~/Caddy/sites/`".** That was a hack
+   — `~/Caddy/sites/` is a home-manager-managed directory; everything
+   in it is a store symlink put there by `home.file."…".source`. The
+   right path is `services.annexwyrm` declared in
+   `~/Github/nixvana/home-manager/septnesis/home.nix`, mirroring
+   `services.zensurance` exactly. The home-manager module is now
+   shipped in `nix/home-manager-module.nix` and exposed via
+   `flake.outputs.homeManagerModules.default`. The Caddyfile snippet
+   under `nix/annexwyrm.Caddyfile` is the *template* the module's
+   `pkgs.writeText` derives from; nobody should symlink it manually.
 
 1. **Started reaching for `--cclibs`, `--ccinc=csrc`, plain `-l...`
    strings.** All wrong. Koka's flag names are `--cclib="a;b;c"`
@@ -101,11 +117,62 @@ be inlined.
 
 ## Priority order
 
-1. **Verify `http://annexwyrm.localhost` end-to-end through Caddy.**
-   Two-subagent pattern, see "How to run e2e" below. The acceptance
-   criterion is: a browser hits `http://annexwyrm.localhost/`, gets
-   the homepage HTML; logs in via the form; uploads a PDF; navigates
-   to `/items/<id>`; sees the rating badge and review-of preamble.
+1. **Wire annexwyrm into `~/Github/nixvana/home-manager/` and verify
+   `http://annexwyrm.localhost` end-to-end.** This is *the* deliverable
+   you are inheriting. Everything else is downstream of it.
+
+   Concrete steps (mirror `services.zensurance` exactly):
+
+   a. In `~/Github/nixvana/home-manager/flake.nix` `inputs`, add:
+      ```
+      annexwyrm.url = "github:cognivore/annexwyrm";
+      annexwyrm.inputs.nixpkgs.follows = "nixpkgs";
+      ```
+      and add `annexwyrm` to the `outputs = inputs@{ … }:` argument list.
+
+   b. In the `septnesis = mkHM { … }` block (around `flake.nix:212`),
+      add to `modules`:
+      ```
+      annexwyrm.homeManagerModules.default
+      ```
+      next to `zensurance.homeManagerModules.default`.
+
+   c. In `~/Github/nixvana/home-manager/septnesis/home.nix`, next to
+      the `services.zensurance = { … };` block, add:
+      ```nix
+      services.annexwyrm = {
+        enable        = true;
+        domain        = "annexwyrm.localhost";
+        username      = "sweater";
+        instanceName  = "sweater's archive";
+        # `socket`, `dataDir`, `package` have sensible defaults.
+      };
+      ```
+
+   d. `cd ~/Github/nixvana/home-manager && home-manager switch --flake .#septnesis`.
+
+   e. After the switch, `~/Caddy/sites/annexwyrm.Caddyfile` is a
+      symlink into the nix store; the daemon launchd agent is
+      registered; the data dir is provisioned and `annexwyrm init`
+      has run. Kick Caddy (`launchctl kickstart -k
+      gui/$(id -u)/com.memorici.caddy`) and the launchd agent
+      (`launchctl kickstart -k gui/$(id -u)/sh.memorici.annexwyrm`,
+      adjust label as music-box names it).
+
+   The annexwyrm side of this is already done: `nix/home-manager-
+   module.nix` exposes `services.annexwyrm.{enable,domain,socket,
+   dataDir,username,instanceName,package}`; the flake exposes it as
+   `homeManagerModules.default`; verify with `nix flake show .` from
+   the annexwyrm repo (the entry is annotated "unknown flake output"
+   by Nix — that's fine, same as every other home-manager flake in
+   the fleet).
+
+   Acceptance criterion: a real browser hits
+   `http://annexwyrm.localhost/`, the homepage HTML loads; logging in
+   via the form works; uploading a PDF works; `/items/<id>` shows the
+   rating badge and the review-of preamble; logout works. **Run this
+   from a browser, not curl** — that's the only way to catch real-
+   world cookie / redirect / CSP / charset gotchas.
 2. **Apply the idiomatic split (`build-*` + `ship-activity`)
    preemptively to `emit-delete`, `emit-follow`, `emit-undo-follow`,
    `emit-like`, `emit-announce` in `src/ap/outbox.kk`.** They compile

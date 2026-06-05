@@ -7,7 +7,13 @@
   };
 
   outputs = { self, nixpkgs, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
+    let
+      # Exposed at top-level (not per-system) so the nixvana home-manager
+      # flake can reference it the same way it references
+      # `zensurance.homeManagerModules.default`.
+      homeManagerModules.default = import ./nix/home-manager-module.nix self;
+    in
+    (flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
 
@@ -71,5 +77,5 @@
           '';
         };
       }
-    );
+    )) // { inherit homeManagerModules; };
 }
