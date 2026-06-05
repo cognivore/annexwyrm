@@ -219,8 +219,7 @@ fun cmd-follow( target-url : string ) : io ()
   else
     with with-sqlite-db(h)
     info("cli/follow", [("target", target-url)])
-    val _ = emit-follow(target-url)
-    ()
+    emit-follow(target-url)
 
 fun cmd-unfollow( target-url : string ) : io ()
   with with-env-config
@@ -234,5 +233,4 @@ fun cmd-unfollow( target-url : string ) : io ()
   else
     with with-sqlite-db(h)
     info("cli/unfollow", [("target", target-url)])
-    val _ = emit-undo-follow(target-url)
-    ()
+    emit-undo-follow(target-url)

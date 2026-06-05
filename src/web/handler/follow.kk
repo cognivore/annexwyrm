@@ -43,7 +43,7 @@ pub fun handle-unfollow-action( req : request )
     val target-url = resolve-target(target)
     if target-url == "" then bad-request("could not resolve target actor")
     else
-      val _ = emit-undo-follow(target-url)
+      emit-undo-follow(target-url)
       see-other("/")
 
 // Accept either a plain actor URL ("https://example.com/users/x") or an
