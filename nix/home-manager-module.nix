@@ -41,7 +41,12 @@ let
   caddyfile = pkgs.writeText "annexwyrm.Caddyfile" ''
     http://${cfg.domain} {
         encode zstd gzip
-        request_body { max_size 4GB }
+        # Caddyfile blocks require the `{` to end the line — `request_body {
+        # max_size 4GB }` on one line is a parse error ("Unexpected next
+        # token after '{' on same line"). Keep the block multi-line.
+        request_body {
+            max_size 4GB
+        }
         reverse_proxy unix/${cfg.socket} {
             header_up X-Forwarded-Host {host}
             header_up X-Forwarded-Proto {scheme}
