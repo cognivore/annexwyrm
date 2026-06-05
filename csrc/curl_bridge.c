@@ -5,7 +5,7 @@
  * to status 0 with empty body. We never call curl_global_init from a
  * thread other than main; we lazily init once.
  */
-#include "annexwyrm.h"
+#include "aw_bridge.h"
 
 #include <curl/curl.h>
 #include <pthread.h>

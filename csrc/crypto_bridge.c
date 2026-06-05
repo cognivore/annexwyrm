@@ -6,7 +6,7 @@
  * PBKDF2-SHA256 (still acceptable for an archive tool).  The fallback
  * is selected at compile time via -DANNEXWYRM_NO_ARGON2.
  */
-#include "annexwyrm.h"
+#include "aw_bridge.h"
 
 #include <openssl/sha.h>
 #include <openssl/pem.h>

@@ -16,7 +16,7 @@
  *   METHOD PATH QUERY HEADERS BODY REMOTE
  * HEADERS is `name: value\n…`.
  */
-#include "annexwyrm.h"
+#include "aw_bridge.h"
 
 #include <sys/socket.h>
 #include <sys/stat.h>

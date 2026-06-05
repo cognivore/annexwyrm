@@ -5,7 +5,7 @@
  * piped into the child; stdout and stderr are captured. Returns
  * `"<exit>\037<stdout>\037<stderr>"`.
  */
-#include "annexwyrm.h"
+#include "aw_bridge.h"
 
 #include <sys/types.h>
 #include <sys/wait.h>

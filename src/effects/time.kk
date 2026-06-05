@@ -13,9 +13,13 @@ pub effect time
   fun now-iso() : iso-time
   fun now-http() : string
   fun now-unix() : int
-  fun iso-from-unix( unix : int ) : iso-time
+  fun iso-from-unix( epoch : int ) : iso-time
 
 // Add `seconds` to a Unix timestamp. Pure; no effect required. Useful
 // for scheduling: `delivery.next-attempt = now-unix().add-seconds(60).iso`.
-pub fun add-seconds( unix : int, secs : int ) : int
-  unix + secs
+// NB: the parameter is `epoch`, not `unix` — gcc predefines `unix` as the
+// macro `1` on Linux, so a C parameter named `unix` expands to `int 1` and
+// the build dies with "expected ';' before numeric constant". clang on
+// darwin doesn't predefine it, which masked this until the Linux deploy.
+pub fun add-seconds( epoch : int, secs : int ) : int
+  epoch + secs

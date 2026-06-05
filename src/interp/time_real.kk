@@ -18,7 +18,10 @@ extern kk-now-http() : ndet string
 extern kk-now-unix() : ndet int
   c "kk_aw_now_unix"
 
-extern kk-iso-from-unix( unix : int ) : ndet string
+// param is `epoch`, not `unix`: gcc predefines the macro `unix`=1 on Linux,
+// turning a C parameter named `unix` into `int 1` (build error). See
+// effects/time.kk.
+extern kk-iso-from-unix( epoch : int ) : ndet string
   c "kk_aw_iso_from_unix"
 
 pub fun with-real-time( action : () -> <time,ndet|e> a ) : <ndet|e> a

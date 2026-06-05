@@ -1,0 +1,15 @@
+# rsync filter for deploy.sh (rsync to root@chat.md110.se:/opt/annexwyrm).
+# Source-only artifacts ship; build output, VCS, dev caches, and any local
+# data/secrets stay put. Runtime data lives in /var/lib/annexwyrm (outside
+# the rsync target) so --delete can never touch it.
+- /.git/
+- /build/
+- /result
+- /result-*
+- /.direnv/
+- /.koka/
+- /data/
+- /tests/e2e/*.log
+- *.db
+- *.db-shm
+- *.db-wal

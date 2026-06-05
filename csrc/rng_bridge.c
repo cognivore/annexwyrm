@@ -1,7 +1,7 @@
 /*
  * rng_bridge.c — /dev/urandom for cryptographic randomness.
  */
-#include "annexwyrm.h"
+#include "aw_bridge.h"
 
 #include <fcntl.h>
 #include <unistd.h>

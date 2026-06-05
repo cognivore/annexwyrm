@@ -1,7 +1,7 @@
 /*
  * str_bridge.c — small string utilities the Koka stdlib doesn't expose.
  */
-#include "annexwyrm.h"
+#include "aw_bridge.h"
 
 /* Byte length of a Koka string. (Koka exposes chars/count which is
  * the code-point count; we need bytes for HTTP Content-Length.) */
