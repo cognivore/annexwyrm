@@ -265,6 +265,216 @@ if [ "$USE_GDRIVE" = "1" ]; then
     assert_grep "$listing" "private.pdf" "gdrive: private.pdf"
 fi
 
+# ===========================================================================
+#  PUBLISH / UNPUBLISH federation-emission journey
+#
+#  Drives the two outbox-firing endpoints with the already-logged-in session
+#  from above, and asserts all four observable surfaces at each step: the HTTP
+#  client view, the daemon log line (stderr → $LOG), the `item` row transition,
+#  and the exact `activity` / `delivery` row state. Continuation of the same
+#  daemon/socket/jar/DB — no new fixture. See tests/e2e/SPEC-publish.md.
+# ===========================================================================
+
+note "=== PUBLISH / UNPUBLISH federation journey ==="
+
+# --- §3: subject + identities, fixed once -------------------------------
+SUBJECT_PATH="$PRIVATE_PATH"          # /items/<hex>
+SUBJECT_URL="$PRIVATE_URL"            # http://localhost/items/<hex> — the stored id
+ACTOR_URL="http://localhost/users/alice"   # local-actor-url() with ANNEXWYRM_USERNAME=alice
+DB="$DATA/annexwyrm.db"
+
+# --- Step P0: baseline (capture deltas, not absolutes) ------------------
+note "  P0 — baseline (activity/delivery counts, privacy, zero followers)"
+ACT_BEFORE=$(sqlite3 "$DB" "SELECT count(*) FROM activity;")
+DEL_BEFORE=$(sqlite3 "$DB" "SELECT count(*) FROM delivery;")
+note "    activity baseline = $ACT_BEFORE, delivery baseline = $DEL_BEFORE"
+assert_sql "$DB" "SELECT privacy FROM item WHERE id='$SUBJECT_URL';" \
+    "private" "subject starts private"
+assert_sql "$DB" "SELECT count(*) FROM activity WHERE type='Create' AND object_id='$SUBJECT_URL';" \
+    "0" "no pre-existing Create"
+assert_sql "$DB" "SELECT count(*) FROM follow WHERE target_id='$ACTOR_URL' AND state='accepted';" \
+    "0" "zero accepted followers (single-actor instance)"
+
+# --- Step P1: PUBLISH — 303, log line, Create row, zero deliveries ------
+note "  P1 — POST $SUBJECT_PATH/publish (session cookie, empty body, no redirect-follow)"
+P1_RESULT=$(post_action "$SOCK" "$JAR" "$SUBJECT_PATH/publish")
+P1_STATUS="${P1_RESULT%%$'\t'*}"
+P1_LOC="${P1_RESULT#*$'\t'}"
+
+# (a) client sees a 303 to the item path
+if [ "$P1_STATUS" != "303" ]; then
+    red "publish: expected status 303, got $P1_STATUS (a 403/404 here means the auth gate or load-item path fired)"
+    exit 1
+fi
+green "  ✓ publish → 303"
+if [ "$P1_LOC" != "$SUBJECT_PATH" ]; then
+    red "publish: expected Location [$SUBJECT_PATH], got [$P1_LOC]"
+    exit 1
+fi
+green "  ✓ publish Location = $SUBJECT_PATH"
+
+# (b) daemon logged outbox/publish with recipients=0 (the literal zero-delivery mirror)
+assert_log_grep "$LOG" \
+    '^\[info\] outbox/publish id=http://localhost/activities/[0-9a-f]+ type=Create recipients=0' \
+    "publish emission"
+
+# (c) exactly one Create activity row for the subject, shaped correctly
+assert_sql "$DB" "SELECT count(*) FROM activity WHERE type='Create' AND object_id='$SUBJECT_URL';" \
+    "1" "one Create activity for subject"
+assert_sql "$DB" "SELECT actor_id FROM activity WHERE type='Create' AND object_id='$SUBJECT_URL';" \
+    "$ACTOR_URL" "Create actor = local actor"
+assert_sql "$DB" "SELECT object_id FROM activity WHERE type='Create' AND object_id='$SUBJECT_URL';" \
+    "$SUBJECT_URL" "Create object_id = item id"
+assert_sql "$DB" "SELECT inbox_remote FROM activity WHERE type='Create' AND object_id='$SUBJECT_URL';" \
+    "0" "Create is outbound"
+assert_sql "$DB" "SELECT id GLOB 'http://localhost/activities/*' FROM activity WHERE type='Create' AND object_id='$SUBJECT_URL';" \
+    "1" "Create id is minted activity URL"
+assert_sql "$DB" "SELECT raw LIKE '%\"type\":\"Create\"%' AND raw LIKE '%$SUBJECT_URL%' FROM activity WHERE type='Create' AND object_id='$SUBJECT_URL';" \
+    "1" "Create raw contains type+object id"
+
+# (c) delivery rows == follower-inbox count == EXACTLY 0 (the headline invariant)
+assert_sql "$DB" "SELECT count(*) FROM delivery;" \
+    "$DEL_BEFORE" "publish queued zero deliveries (delta == 0)"
+CREATE_AID=$(sqlite3 "$DB" \
+    "SELECT id FROM activity WHERE type='Create' AND object_id='$SUBJECT_URL';")
+assert_sql "$DB" "SELECT count(*) FROM delivery WHERE activity_id='$CREATE_AID';" \
+    "0" "exactly zero deliveries for the Create activity"
+
+# --- Step P2: item row transitioned to public --------------------------
+note "  P2 — item row is now public (same row, updated_at advanced)"
+assert_sql "$DB" "SELECT privacy FROM item WHERE id='$SUBJECT_URL';" \
+    "public" "subject is now public"
+assert_sql "$DB" "SELECT count(*) FROM item WHERE id='$SUBJECT_URL';" \
+    "1" "still exactly one item row"
+assert_sql "$DB" "SELECT updated_at > published_at FROM item WHERE id='$SUBJECT_URL';" \
+    "1" "updated_at advanced on publish"
+
+# --- Step P3: the item is now publicly visible over HTTP ----------------
+note "  P3 — anonymous GET now 200 + public-state markers"
+assert_status "$SOCK" "$SUBJECT_PATH" 200
+PUB_HTML=$(fetch_html_anon "$SOCK" "$SUBJECT_PATH")
+assert_grep "$PUB_HTML" '<span class="privacy">public</span>' "privacy meta shows public"
+assert_grep "$PUB_HTML" '/unpublish" method="post"' "publish state offers the unpublish action"
+assert_grep "$PUB_HTML" 'Private PDF' "subject title still renders"
+# negative marker: the publish form MUST be gone (proves the new state, not a cache)
+if printf '%s' "$PUB_HTML" | grep -q '/publish" method="post"'; then
+    red "published item still shows a publish form"
+    printf '%s\n' "$PUB_HTML" | head -40 >&2
+    exit 1
+fi
+green "  ✓ no stale publish form on the published page"
+# (b) read render is pure (no log line); assert the daemon survived the request
+kill -0 "$DAEMON_PID" || { red "daemon died serving the published item page"; exit 1; }
+green "  ✓ daemon still alive after public render"
+
+# --- Step U1: UNPUBLISH — 303, delete log, Delete row, zero deliveries --
+note "  U1 — POST $SUBJECT_PATH/unpublish (emit-delete runs BEFORE revert-to-private)"
+U1_RESULT=$(post_action "$SOCK" "$JAR" "$SUBJECT_PATH/unpublish")
+U1_STATUS="${U1_RESULT%%$'\t'*}"
+U1_LOC="${U1_RESULT#*$'\t'}"
+
+# (a) client sees a 303 to the item path
+if [ "$U1_STATUS" != "303" ]; then
+    red "unpublish: expected status 303, got $U1_STATUS"
+    exit 1
+fi
+green "  ✓ unpublish → 303"
+if [ "$U1_LOC" != "$SUBJECT_PATH" ]; then
+    red "unpublish: expected Location [$SUBJECT_PATH], got [$U1_LOC]"
+    exit 1
+fi
+green "  ✓ unpublish Location = $SUBJECT_PATH"
+
+# (b) daemon logged outbox/delete — id ONLY, line ends right after it (no recipients=)
+assert_log_grep "$LOG" \
+    '^\[info\] outbox/delete id=http://localhost/activities/[0-9a-f]+$' \
+    "delete emission"
+
+# (c) exactly one Delete activity row for the subject, shaped correctly
+assert_sql "$DB" "SELECT count(*) FROM activity WHERE type='Delete' AND object_id='$SUBJECT_URL';" \
+    "1" "one Delete activity for subject"
+assert_sql "$DB" "SELECT actor_id FROM activity WHERE type='Delete' AND object_id='$SUBJECT_URL';" \
+    "$ACTOR_URL" "Delete actor = local actor"
+assert_sql "$DB" "SELECT object_id FROM activity WHERE type='Delete' AND object_id='$SUBJECT_URL';" \
+    "$SUBJECT_URL" "Delete object_id = item id"
+assert_sql "$DB" "SELECT inbox_remote FROM activity WHERE type='Delete' AND object_id='$SUBJECT_URL';" \
+    "0" "Delete is outbound"
+assert_sql "$DB" "SELECT count(*) FROM activity WHERE object_id='$SUBJECT_URL' AND type IN ('Create','Delete');" \
+    "2" "both Create and Delete recorded for subject"
+
+# (c) delivery rows for the Delete == EXACTLY 0; global total still baseline
+DELETE_AID=$(sqlite3 "$DB" \
+    "SELECT id FROM activity WHERE type='Delete' AND object_id='$SUBJECT_URL';")
+assert_sql "$DB" "SELECT count(*) FROM delivery WHERE activity_id='$DELETE_AID';" \
+    "0" "exactly zero deliveries for the Delete activity"
+assert_sql "$DB" "SELECT count(*) FROM delivery;" \
+    "$DEL_BEFORE" "delivery table unchanged across publish+unpublish"
+
+# --- Step U2: item reverted to private AND the row survives -------------
+note "  U2 — item reverted to private; row survives (NO local tombstone)"
+assert_sql "$DB" "SELECT count(*) FROM item WHERE id='$SUBJECT_URL';" \
+    "1" "item row survives unpublish (no local tombstone)"
+assert_sql "$DB" "SELECT privacy FROM item WHERE id='$SUBJECT_URL';" \
+    "private" "subject reverted to private"
+assert_sql "$DB" "SELECT name FROM item WHERE id='$SUBJECT_URL';" \
+    "Private PDF" "item name preserved through unpublish"
+assert_sql "$DB" "SELECT updated_at >= published_at FROM item WHERE id='$SUBJECT_URL';" \
+    "1" "updated_at advanced on unpublish"
+
+# --- Step U3: hidden from anonymous HTTP again, with no leak ------------
+note "  U3 — anon GET 404 (no leak); owner still 200 (authorization, not deletion)"
+assert_status "$SOCK" "$SUBJECT_PATH" 404
+GONE_HTML=$(fetch_html_anon "$SOCK" "$SUBJECT_PATH")
+assert_grep "$GONE_HTML" "no such item" "404 body says no such item"
+if printf '%s' "$GONE_HTML" | grep -q 'Private PDF'; then
+    red "404 page leaked the private item's title"
+    printf '%s\n' "$GONE_HTML" | head -40 >&2
+    exit 1
+fi
+if printf '%s' "$GONE_HTML" | grep -q 'This stays with alice'; then
+    red "404 page leaked the private item's content"
+    printf '%s\n' "$GONE_HTML" | head -40 >&2
+    exit 1
+fi
+green "  ✓ 404 page leaks neither title nor content"
+# owner can still see it — authorization, not deletion
+OWNER_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+    --unix-socket "$SOCK" --cookie "$JAR" "http://x$SUBJECT_PATH")
+if [ "$OWNER_CODE" != "200" ]; then
+    red "owner GET of unpublished item: expected 200, got $OWNER_CODE (row may have been destroyed)"
+    exit 1
+fi
+green "  ✓ owner still sees the private item → 200"
+OWNER_HTML=$(fetch_html "$SOCK" "$JAR" "$SUBJECT_PATH")
+assert_grep "$OWNER_HTML" '/publish" method="post"' "owner sees publish action again (item is private)"
+# (b) read render is pure; assert only that the daemon is still alive
+kill -0 "$DAEMON_PID" || { red "daemon died serving the unpublished item page"; exit 1; }
+green "  ✓ daemon still alive after re-hidden render"
+# (c) re-affirm survival from the DB side after the HTTP round trip
+assert_sql "$DB" "SELECT count(*) FROM item WHERE id='$SUBJECT_URL' AND privacy='private';" \
+    "1" "private item persists after unpublish round-trip"
+
+# --- §5: authorization edge — the owner gate is real --------------------
+note "  AUTH — anonymous publish/unpublish forbidden (403 + 'login required')"
+ANON_PUB_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+    --unix-socket "$SOCK" --request POST --data '' "http://x$SUBJECT_PATH/publish")
+if [ "$ANON_PUB_CODE" != "403" ]; then
+    red "anon publish: expected 403, got $ANON_PUB_CODE (the owner gate did not fire)"
+    exit 1
+fi
+green "  ✓ anon publish → 403"
+ANON_PUB_BODY=$(curl --silent --unix-socket "$SOCK" --request POST --data '' \
+    "http://x$SUBJECT_PATH/publish")
+assert_grep "$ANON_PUB_BODY" "login required" "anon publish refused"
+ANON_UNPUB_BODY=$(curl --silent --unix-socket "$SOCK" --request POST --data '' \
+    "http://x$SUBJECT_PATH/unpublish")
+assert_grep "$ANON_UNPUB_BODY" "login required" "anon unpublish refused"
+# (c) the anon attempts emitted no activities and did not flip privacy
+assert_sql "$DB" "SELECT count(*) FROM activity WHERE object_id='$SUBJECT_URL' AND type IN ('Create','Delete');" \
+    "2" "anon attempts emitted no activities"
+assert_sql "$DB" "SELECT privacy FROM item WHERE id='$SUBJECT_URL';" \
+    "private" "anon publish did not change privacy"
+
 green ""
 green "=========================================="
 green "  e2e passed.  data dir: $DATA"

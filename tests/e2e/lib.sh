@@ -48,6 +48,55 @@ assert_grep() {
     fi
 }
 
+# assert_sql DB SQL EXPECTED LABEL — run a scalar query, compare exactly.
+# Prints the query and both values on failure (failure ergonomics).
+assert_sql() {
+    local db="$1" sql="$2" expected="$3" label="${4:-sql}"
+    local got
+    got=$(sqlite3 "$db" "$sql")
+    if [ "$got" != "$expected" ]; then
+        red "SQL assert failed ($label): expected [$expected], got [$got]"
+        red "  query: $sql"
+        return 1
+    fi
+    green "  ✓ $label: $sql → $got"
+}
+
+# assert_log_grep LOGFILE PATTERN LABEL — fail unless PATTERN (grep -E) is in
+# LOGFILE. The daemon logs to stderr, captured by run.sh into $LOG, so this is
+# what we grep for emission lines (NOT stdout — see src/interp/log_console.kk).
+assert_log_grep() {
+    local log="$1" pattern="$2" label="${3:-log}"
+    if grep -Eq -- "$pattern" "$log"; then
+        green "  ✓ daemon logged $label: /$pattern/"
+    else
+        red "daemon log missing $label: /$pattern/"
+        yellow "tail of $log:"; tail -40 "$log" >&2 || true
+        return 1
+    fi
+}
+
+# post_action SOCK JAR PATH → echoes "STATUS<TAB>LOCATION" (Location CR-stripped).
+# POSTs an empty body carrying the cookie jar; does NOT follow redirects.
+# Header parsing is grep -i + sed (BSD-awk-proof; the awk IGNORECASE trick in
+# `upload` is a no-op on macOS awk — see the house notes below).
+post_action() {
+    local sock="$1" jar="$2" path="$3"
+    local hdr; hdr=$(mktemp)
+    local code
+    code=$(curl --silent --show-error \
+                --unix-socket "$sock" --cookie "$jar" \
+                --request POST --data '' \
+                --output /dev/null --dump-header "$hdr" \
+                --write-out '%{http_code}' \
+                "http://x$path")
+    local loc
+    loc=$(grep -i '^location:' "$hdr" | head -1 \
+          | sed -E 's/^[^:]*:[[:space:]]*//' | tr -d '\r')
+    rm -f "$hdr"
+    printf '%s\t%s' "$code" "$loc"
+}
+
 # Log in: POST /login with form-encoded credentials, save Set-Cookie
 # into a jar file. Subsequent requests use that jar.
 login() {
