@@ -72,6 +72,42 @@ let
         }
     }
   '';
+
+  # Actor identity + data location, exported into the daemon's launchd
+  # environment so `init` and `serve` (both run by serveScript below) agree
+  # on who the local actor is. The original bug: init ran with none of
+  # these set, so it minted the config_env default actor
+  # (alice@annexwyrm.local, https) while the daemon served
+  # sweater@annexwyrm.localhost — login then failed (no matching actor row,
+  # and local_login's FK to actor(id) silently rejected the password row).
+  appEnv = {
+    ANNEXWYRM_DOMAIN        = cfg.domain;
+    ANNEXWYRM_BASE_URL      = "http://${cfg.domain}";
+    ANNEXWYRM_USERNAME      = cfg.username;
+    ANNEXWYRM_INSTANCE_NAME = cfg.instanceName;
+    ANNEXWYRM_SOCKET        = cfg.socket;
+    ANNEXWYRM_DATA          = cfg.dataDir;
+  };
+
+  # The daemon launcher. Resolves the login password from rageveil at every
+  # (re)start — the same "resolve secrets at service start" pattern
+  # services.zensurance uses, keeping the secret out of the nix store — then
+  # runs the idempotent `init` (mint the actor if absent, upsert the login
+  # password row) and exec's `serve`. The identity env above reaches this
+  # script through the launchd agent's EnvironmentVariables.
+  serveScript = pkgs.writeShellScript "annexwyrm-serve" ''
+    set -euo pipefail
+    mkdir -p ${lib.escapeShellArg cfg.dataDir}
+    ${lib.optionalString (cfg.passwordSecret != null && cfg.rageveilPackage != null) ''
+      if pw="$(${cfg.rageveilPackage}/bin/rageveil show ${lib.escapeShellArg cfg.passwordSecret} 2>/dev/null)"; then
+        export ANNEXWYRM_PASSWORD="$pw"
+      else
+        echo "annexwyrm: WARNING: could not resolve '${cfg.passwordSecret}' from rageveil; form login disabled until fixed" >&2
+      fi
+    ''}
+    ${cfg.package}/bin/annexwyrm init ${lib.escapeShellArg cfg.dataDir}
+    exec ${cfg.package}/bin/annexwyrm serve
+  '';
 in
 {
   options.services.annexwyrm = {
@@ -114,9 +150,28 @@ in
       description = "Friendly name shown in the HTML chrome.";
     };
 
-    # `secrets` follows the same shape as `services.zensurance.secrets`
-    # — resolve through rageveil at every service start.  TODO: wire the
-    # ANNEXWYRM_PASSWORD path through rageveil instead of hardcoding.
+    passwordSecret = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "annexwyrm.localhost/sweater/password";
+      description = ''
+        rageveil entry path holding the login password. Resolved with
+        `rageveil show` at every daemon (re)start and applied to the local
+        actor's login row, so the secret never lands in the nix store.
+        Requires `rageveilPackage`. When null, no password is set and the
+        login form cannot authenticate.
+      '';
+    };
+
+    rageveilPackage = mkOption {
+      type = types.nullOr types.package;
+      default = null;
+      defaultText = literalExpression "pkgs.rageveil";
+      description = ''
+        The rageveil package used to resolve `passwordSecret` at runtime.
+        Mirrors `services.zensurance.rageveilPackage`.
+      '';
+    };
   };
 
   config = mkIf cfg.enable {
@@ -127,28 +182,22 @@ in
     # file there; a Caddy reload picks it up.
     home.file."Caddy/sites/annexwyrm.Caddyfile".source = caddyfile;
 
-    # Provision the data dir + run `annexwyrm init` exactly once. The
-    # `[ -f ]` guard makes the activation idempotent.
-    home.activation.annexwyrmInit = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+    # Ensure the data dir exists before launchd starts the agent: launchd
+    # opens StandardOut/ErrorPath (daemon.log/err under dataDir) when it
+    # spawns the job and will not create parent dirs itself. Actor minting
+    # and the rageveil password now happen in serveScript at agent start.
+    home.activation.annexwyrmDataDir = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
       $DRY_RUN_CMD mkdir -p ${cfg.dataDir}
-      if [ ! -f ${cfg.dataDir}/annexwyrm.db ]; then
-        $DRY_RUN_CMD ${cfg.package}/bin/annexwyrm init ${cfg.dataDir}
-      fi
     '';
 
     # The daemon itself.  Standard launchd-agent shape used elsewhere in
-    # the nixvana fleet (mirror-gallery, mighty-rearranger, etc.).
+    # the nixvana fleet (mirror-gallery, mighty-rearranger, etc.). Runs via
+    # serveScript so the rageveil password is resolved at every start.
     launchd.agents.annexwyrm = {
       enable = true;
       config = {
-        ProgramArguments = [ "${cfg.package}/bin/annexwyrm" "serve" ];
-        EnvironmentVariables = {
-          ANNEXWYRM_DOMAIN = cfg.domain;
-          ANNEXWYRM_BASE_URL = "http://${cfg.domain}";
-          ANNEXWYRM_USERNAME = cfg.username;
-          ANNEXWYRM_INSTANCE_NAME = cfg.instanceName;
-          ANNEXWYRM_SOCKET = cfg.socket;
-          ANNEXWYRM_DATA = cfg.dataDir;
+        ProgramArguments = [ "${serveScript}" ];
+        EnvironmentVariables = appEnv // {
           HOME = config.home.homeDirectory;
           PATH = "${cfg.package}/bin:${pkgs.rclone}/bin:${pkgs.git-annex}/bin:/usr/bin:/bin";
         };
