@@ -146,6 +146,28 @@ on a **Unix domain socket** speaking minimal HTTP/1.1; Caddy reverse-proxies
 to that socket. The `Caddyfile.example` shipped here is the entire HTTP
 configuration.
 
+### Local dev — annexwyrm.localhost via music-box
+
+On a host with the music-box-managed Caddy (the same setup that defines
+`zensurance.localhost`, `mirror-gallery.localhost`, etc.), drop the
+provided per-site Caddyfile into `~/Caddy/sites/`:
+
+```bash
+ln -s "$PWD/nix/annexwyrm.Caddyfile" ~/Caddy/sites/annexwyrm.Caddyfile
+launchctl kickstart -k gui/$(id -u)/com.memorici.caddy    # darwin
+# systemctl --user reload caddy                            # linux
+```
+
+Then run the daemon against the same socket path:
+
+```bash
+ANNEXWYRM_SOCKET="$HOME/.local/share/annexwyrm/sock" just serve
+```
+
+`http://annexwyrm.localhost/` is then live. (See `nix/annexwyrm.Caddyfile`
+for the socket path and static-asset handling — identical shape to
+`~/Caddy/sites/zensurance.Caddyfile`, just unix-socket instead of TCP.)
+
 For uploads, Caddy streams the body through unmodified; our multipart parser
 in `src/web/multipart.kk` runs against the Unix socket the same way it would
 against a TCP socket. Body size is capped by Caddy (`request_body max_size`)

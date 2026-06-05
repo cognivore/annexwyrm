@@ -40,11 +40,7 @@ pub fun ap-link/from-json( j : json ) : maybe<ap-link>
 //  The unified AP object record
 // ----------------------------------------------------------------------
 
-// NOTE: reference `struct`, not `value struct`, as a workaround for
-// koka-lang/koka#654 (genLambda crash on mlift'd lambdas capturing
-// value structs with mixed raw + boxed fields). Revisit once Koka
-// > 3.2.3 ships a fix.
-pub struct ap-object
+pub value struct ap-object
   id            : url
   kind          : object-kind
   attributed-to : url            // owner actor id

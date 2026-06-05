@@ -9,10 +9,7 @@ module web/server
 // One inbound HTTP request from Caddy. Headers come in case-insensitive
 // per HTTP; we normalise names to lowercase before they hit handlers,
 // so `req.header("content-type")` always finds them.
-//
-// Reference `struct`, not `value struct`, per the koka-lang/koka#654
-// workaround we follow elsewhere — keeps closure capture happy.
-pub struct request
+pub value struct request
   method  : string                    // "GET", "POST", …
   path    : string                    // "/users/alice/inbox"
   query   : string                    // "page=2" (no leading "?")
@@ -20,7 +17,7 @@ pub struct request
   body    : string                    // raw bytes
   remote  : string                    // "X-Forwarded-For" or socket peer
 
-pub struct response
+pub value struct response
   status      : int
   status-text : string
   headers     : list<(string,string)>

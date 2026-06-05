@@ -1,0 +1,43 @@
+# Drops into ~/Caddy/sites/ the same way zensurance.Caddyfile does. The
+# music-box module picks it up via `import sites/*.Caddyfile` in the
+# top-level Caddyfile, so a Caddy reload is all it takes.
+#
+# annexwyrm listens on a Unix socket because Caddy already does HTTP/2,
+# HTTP/3, TLS, ALPN, ACME, vhost routing — re-implementing any of that
+# in Koka would be a year of distraction. The daemon speaks bare
+# HTTP/1.1 over the socket; Caddy proxies to it.
+#
+# To activate:
+#
+#     ln -s "$PWD/nix/annexwyrm.Caddyfile" ~/Caddy/sites/annexwyrm.Caddyfile
+#     systemctl --user reload caddy        # or `launchctl kickstart` on darwin
+#
+# Edit ANNEXWYRM_SOCKET in the daemon to point at the matching path.
+
+http://annexwyrm.localhost {
+        encode zstd gzip
+
+        request_body {
+                max_size 4GB
+        }
+
+        reverse_proxy unix//Users/sweater/.local/share/annexwyrm/sock {
+                header_up X-Forwarded-Host {host}
+                header_up X-Forwarded-Proto {scheme}
+                transport http {
+                        versions 1.1
+                        read_buffer 64KB
+                        write_buffer 64KB
+                }
+        }
+
+        handle_path /static/* {
+                root * /Users/sweater/.local/share/annexwyrm/static
+                file_server
+        }
+
+        log {
+                output file /Users/sweater/Caddy/logs/annexwyrm.log
+                format json
+        }
+}

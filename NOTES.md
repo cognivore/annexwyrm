@@ -1,12 +1,14 @@
-# Notes — annexwyrm build state and SQL typing
+# Notes — annexwyrm build state, idiomatic workarounds, SQL typing
 
 ## Build state (Koka 3.2.3 in the dev shell)
 
-The 56 Koka modules type-check structurally — names resolve, effects are
-declared, externs are wired — but two classes of friction remain before
-`just build` produces a working binary:
+`just build` produces a working binary; `just test-e2e` runs against it
+and reports 11/11 green (upload public + private PDFs, two reviews
+linking between them, anonymous browse asserts 404 on private and 200
+on public). The 56 Koka modules now compile cleanly. There remain three
+non-obvious quirks worth flagging:
 
-1. **Koka 3.2.3 backend codegen bug**:
+1. **Koka 3.2.3 backend codegen bug — koka-lang/koka#654**:
    ```
    internal error: Backend.C.genLambda: ap/outbox/@mlift-emit-create has
    multiple value type fields that each contain both raw types and
@@ -14,24 +16,41 @@ declared, externs are wired — but two classes of friction remain before
    ```
    Fires when a monadically-lifted lambda captures a `value struct` that
    mixes raw fields (`int`, `bool`, enum) with reference fields
-   (`string`, `list`, `json`). We worked around it for `ap-activity` and
-   `ap-object` by demoting them from `value struct` to `struct` (the
-   reference variant). Anywhere we still get this, the fix is the same.
+   (`string`, `list`, `json`).
+
+   **Workaround we now use (idiomatic):** keep the types as `value
+   struct`, but never *construct + multi-effect-tail* in one function.
+   Each `emit-*` in `src/ap/outbox.kk` builds the activity inside a pure
+   helper (`build-create-activity`, `build-update-activity`, etc.) that
+   carries only the `config` effect, then passes the returned struct to
+   `ship-activity`. The synthetic `@mlift-emit-*` lambda then captures
+   only primitives, not the value struct. This matches `lib/std/time/
+   date.kk`'s shape: value structs in pure constructors, effects in
+   separate functions.
 
 2. **Pervasive `div` annotations**: every function that transitively
    uses our hand-rolled JSON parser or `url-decode` needs `<div|e>` in
-   its effect row. We added them in waves; if the compiler still gripes
-   about `expected effect: total / inferred effect: <div|_e>`, the fix
-   is always one more `div` in the signature on that line.
+   its effect row. The compiler is explicit about it; just append `,div`
+   when it complains.
 
-What it took to get this far: changing all extern effects from `io` to
-`ndet` / `<ndet,net>` / `<ndet,fsys>`, single-clause `with handler`
-blocks instead of stacked `with fun X`, escaping every `raw` / `pub` /
-`handle` identifier (those are Koka keywords), and renaming
+3. **C bridge gotchas worth remembering**:
+   - `\x1f` in adjacent C literal context eats the next hex digit
+     (`\x1ff` → 0x1FF → out of range). `proc_bridge.c` uses octal
+     `\037`.
+   - SIGPIPE: a peer closing mid-write (curl `--max-time`, nc `-z`
+     probes) kills the daemon unless `signal(SIGPIPE, SIG_IGN)` runs
+     early. `csrc/socket_server.c:kk_aw_listen` ignores it.
+   - `--ccincdir` resolves relative to where the C compiler runs (under
+     `.koka/.../cc-...`), not where `koka` was invoked from. The
+     Justfile uses `$(pwd)/csrc` to make it absolute.
+
+What it took to get this far otherwise: changing all extern effects
+from `io` to `ndet` / `<ndet,net>` / `<ndet,fsys>`, single-clause `with
+handler` blocks instead of stacked `with fun X`, escaping every `raw`
+/ `pub` / `handle` identifier (those are Koka keywords), renaming
 `dispatch-or-400` to `dispatch-or-bad` (identifiers must not end in a
-digit-after-dash). The C bridge fix that was non-obvious: `\x1f` in C
-literals adjacent to another hex digit eats it (`\x1ff` → 0x1FF → out of
-range), so `proc_bridge.c` uses `\037` octal escapes throughout.
+digit-after-dash), and importing `ap/activity` explicitly in `annexwyrm.kk`
+even though it's transitively visible through `ap/outbox`.
 
 ## SQL typing — your question
 

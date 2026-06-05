@@ -11,11 +11,7 @@ import core/types
 import core/json
 import ap/object
 
-// NOTE: reference `struct`, not `value struct`, as a workaround for
-// koka-lang/koka#654 (genLambda crash on mlift'd lambdas capturing
-// value structs with mixed raw + boxed fields). Revisit once Koka
-// > 3.2.3 ships a fix.
-pub struct ap-activity
+pub value struct ap-activity
   id        : url
   kind      : activity-kind
   actor     : url            // who performed the activity
