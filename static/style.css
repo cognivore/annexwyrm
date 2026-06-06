@@ -199,7 +199,9 @@ button:hover { background: #d6cea1; }
 .rating.positive { color: #18691a; border-color: #74b076; background: #ecf7ec; }
 .rating.negative { color: #962020; border-color: #c98c8c; background: #fceaea; }
 .rating.neutral  { color: var(--fg-mute); }
-.rating .stars   { letter-spacing: 0.6px; margin-left: 2px; }
+.rating .stars   { letter-spacing: 0.6px; }
+.rating .phrase  { margin-left: 4px; font-family: var(--font, inherit); }
+.rating .score   { margin-left: 4px; opacity: 0.7; font-size: 12px; }
 
 .review-of {
     color: var(--fg-mute);

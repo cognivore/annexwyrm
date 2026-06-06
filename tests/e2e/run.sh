@@ -258,6 +258,41 @@ else
     green "  ✓ public remote empty after archived upload"
 fi
 
+# (d) STORAGE DISCIPLINE — the uploaded bytes must live ONLY in the rclone
+#     backend, never on the SERVER's own state/data dir. (The archive remote
+#     is the off-box backup; $DATA is the server's local state. On prod the
+#     remote is gdrive-crypt — genuinely off-box.) No file under $DATA may
+#     equal the uploaded blob, and the blob must be retrievable FROM the
+#     backend (proving it is backed up, not lost).
+if find "$DATA" -type f -exec cmp -s {} "$PDF_ONE" \; -print 2>/dev/null | grep -q .; then
+    red "blob bytes were persisted on the SERVER data dir ($DATA) — must be rclone-only"
+    find "$DATA" -type f -exec cmp -s {} "$PDF_ONE" \; -print >&2
+    exit 1
+fi
+green "  ✓ blob NOT persisted under the server data dir (rclone-backend only)"
+if [ "$USE_GDRIVE" != "1" ]; then
+    cmp -s "$ARCHIVE_REMOTE/$ARCH_SLUG" "$PDF_ONE" \
+        && green "  ✓ blob retrievable from the rclone backend (backed up, not on the server)" \
+        || { red "blob not retrievable from the rclone backend"; exit 1; }
+fi
+
+# (e) PRIVATE = NO LEAK TO ANYONE NOT LOGGED IN — an archived ("private")
+#     file must not expose a download link OR url in ANY anon-facing
+#     representation: not the HTML page, not the AP JSON a scraper requests.
+A_AP=$(fetch_ap_anon "$SOCK" "$ARCH_PATH")
+for needle in "uc?export=download" "$ARCHIVE_REMOTE" "$PUBLIC_REMOTE" "drive.google.com"; do
+    if printf '%s' "$A_AP" | grep -qF "$needle"; then
+        red "archived item's AP JSON leaked a blob reference to anon: $needle"
+        printf '%s\n' "$A_AP" >&2
+        exit 1
+    fi
+    if printf '%s' "$A_HTML" | grep -qF "$needle"; then
+        red "archived item's HTML leaked a blob reference to anon: $needle"
+        exit 1
+    fi
+done
+green "  ✓ archived (private) file leaks no download link/URL to anon (HTML + AP JSON)"
+
 # ===========================================================================
 #  Step B — publish-file later. Copies to the public remote, mints + stores
 #  the URL, renders the download link, and emits an Update.
@@ -288,6 +323,17 @@ if printf '%s' "$B_HTML" | grep -q 'file archived, not published'; then
     exit 1
 fi
 green "  ✓ archived line gone on the published page"
+
+# (a+) positive control — a PUBLISHED file SHOULD be reachable by anon (that
+#      is the whole point of publishing), including in the AP JSON. This
+#      proves the archived-no-leak gate hides only what is private, not
+#      everything.
+B_AP=$(fetch_ap_anon "$SOCK" "$ARCH_PATH")
+if [ "$USE_GDRIVE" = "1" ]; then
+    assert_grep "$B_AP" "uc?export=download" "published item's AP JSON exposes the download URL to anon"
+else
+    assert_grep "$B_AP" "http://example.test/dl/$ARCH_SLUG" "published item's AP JSON exposes the download URL to anon"
+fi
 
 # (b) daemon log — publish-file emits Update (recipients=0).
 assert_log_grep "$LOG" \
@@ -395,8 +441,8 @@ HOME_HTML=$(fetch_html_anon "$SOCK" "/")
 assert_grep "$HOME_HTML" "Review: praise PDF one"            "review A title on home"
 assert_grep "$HOME_HTML" "Review: praise PDF two even more"  "review B title on home"
 assert_grep "$HOME_HTML" "Archived PDF"                      "archived item appears on home (no WHERE filter)"
-assert_grep "$HOME_HTML" '\[+2\]' "rating badge +2"
-assert_grep "$HOME_HTML" '\[+3\]' "rating badge +3"
+assert_grep "$HOME_HTML" "liked it a lot" "rating +2 shown in words on home"
+assert_grep "$HOME_HTML" "loved it"       "rating +3 shown in words on home"
 assert_grep "$HOME_HTML" 'class="rating positive"' "positive-rating css class"
 # The published item carries the [file] marker; no privacy word ever appears.
 assert_grep "$HOME_HTML" '\[file\]' "published item shows the [file] marker"
@@ -801,6 +847,10 @@ assert_sql "$DB" "SELECT count(*) FROM activity WHERE type='Update' AND object_i
 K_HTML=$(fetch_html_anon "$SOCK" "$REV_PATH")
 assert_grep "$K_HTML" "Six&#39;s Sharpied Kamigawa" "edited review title renders (apostrophe escaped)"
 assert_grep "$K_HTML" "review of <a href=\"$REV_PARENT\"" "review-of preamble survives the edit"
+# rating is shown in WORDS (not just ambiguous stars) + a 3-slot bar.
+assert_grep "$K_HTML" "liked it a lot" "rating shown in words (+2 = 'liked it a lot')"
+assert_grep "$K_HTML" "★★☆" "rating shows a 3-slot bar so magnitude reads as out-of-3"
+assert_grep "$K_HTML" "of ±3" "rating shows the explicit out-of-range hint"
 if printf '%s' "$K_HTML" | grep -q '(untitled)'; then
     red "review still shows (untitled) after the edit"
     exit 1
@@ -893,6 +943,11 @@ assert_sql "$DB" "SELECT file_public_url FROM item WHERE id='$ARCH_URL';" \
 M_HTML=$(fetch_html_anon "$SOCK" "$ARCH_PATH")
 assert_grep "$M_HTML" 'class="download"'  "published+edited page still shows the download link"
 assert_grep "$M_HTML" "Published And Edited" "published+edited title renders"
+assert_grep "$M_HTML" "loved it" "rating +3 reads 'loved it' in words"
+assert_grep "$M_HTML" "★★★" "rating +3 fills all three slots"
+# the home list also describes ratings in words, not bare stars.
+M_HOME=$(fetch_html_anon "$SOCK" "/")
+assert_grep "$M_HOME" "loved it" "home list shows the rating in words"
 
 green ""
 green "=========================================="

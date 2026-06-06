@@ -43,15 +43,20 @@ fun review-of-block( i : annex-item ) : string
   else "  <p class=\"review-of\">review of " ++
        "<a href=\"" ++ esc(i.in-reply-to) ++ "\">" ++ esc(i.in-reply-to) ++ "</a></p>"
 
-// The bracketed rating + star glyphs that go in the title line.
+// The rating that goes in the title line. Words first (unambiguous), with a
+// three-slot ★/☆ bar so the magnitude reads as "out of 3", and the signed
+// numeral. Colour (positive/negative/neutral) carries the direction.
 fun rating-badge( i : annex-item ) : string
   if !i.has-rating then ""
   else
     val css = if i.rating > 0 then "positive"
               elif i.rating < 0 then "negative"
               else "neutral"
-    " <span class=\"rating " ++ css ++ "\">" ++ rating-show(i.rating) ++
-    " <span class=\"stars\">" ++ rating-stars(i.rating) ++ "</span></span>"
+    " <span class=\"rating " ++ css ++
+      "\" title=\"" ++ esc(rating-signed(i.rating)) ++ " on a -3 to +3 scale\">" ++
+    "<span class=\"stars\">" ++ rating-stars3(i.rating) ++ "</span> " ++
+    "<span class=\"phrase\">" ++ esc(rating-phrase(i.rating)) ++ "</span> " ++
+    "<span class=\"score\">(" ++ esc(rating-signed(i.rating)) ++ " of ±3)</span></span>"
 
 fun summary-block( i : annex-item ) : string
   if i.summary == "" then ""

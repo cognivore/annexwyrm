@@ -722,8 +722,8 @@ assert_grep "$REVIEW_B_HTML" 'review of' "review-of preamble text"
 assert_grep "$REVIEW_B_HTML" "<p class=\"review-of\">review of <a href=\"$PRIVATE_URL\">" \
     "review-of preamble links to \$PRIVATE_URL"
 # Rating badge.
-assert_grep "$REVIEW_B_HTML" '<span class="rating positive">' "rating positive class (+3)"
-assert_grep "$REVIEW_B_HTML" '\[+3\]' "rating badge [+3]"
+assert_grep "$REVIEW_B_HTML" 'class="rating positive"' "rating positive class (+3)"
+assert_grep "$REVIEW_B_HTML" 'loved it' "rating +3 shown in words ('loved it')"
 # Stars: exactly three filled.
 assert_grep "$REVIEW_B_HTML" '★★★' "three filled stars"
 # Body hyperlink survives verbatim through multipart (--form-string gotcha).
@@ -734,10 +734,10 @@ REVIEW_A_HEADERS="$(dump_headers_tcp "$REVIEW_A_PATH")"
 assert_status_tcp "$REVIEW_A_PATH" 200 "review A page status"
 assert_via_caddy "$REVIEW_A_HEADERS" "review A page"
 REVIEW_A_HTML="$(fetch_html_anon_tcp "$REVIEW_A_PATH")"
-assert_grep "$REVIEW_A_HTML" '<span class="rating positive">' "review A rating positive class (+2)"
-assert_grep "$REVIEW_A_HTML" '\[+2\]' "review A badge [+2]"
-# Exactly two stars: assert ★★ present and ★★★ absent.
-assert_grep "$REVIEW_A_HTML" '★★' "review A two filled stars"
+assert_grep "$REVIEW_A_HTML" 'class="rating positive"' "review A rating positive class (+2)"
+assert_grep "$REVIEW_A_HTML" 'liked it a lot' "review A rating +2 shown in words"
+# Exactly two filled stars in the 3-slot bar: ★★ present, ★★★ absent.
+assert_grep "$REVIEW_A_HTML" '★★☆' "review A two filled + one hollow (out of 3)"
 if printf '%s' "$REVIEW_A_HTML" | grep -q '★★★'; then
     red "review A shows three stars but rating is +2"; exit 1; fi
 green "  ✓ review A shows exactly two stars"
@@ -751,8 +751,8 @@ assert_status_tcp "/" 200 "homepage status (post-upload)"
 HOME2_HTML="$(fetch_html_anon_tcp "/")"
 assert_grep "$HOME2_HTML" 'Review: praise public PDF' "home: review A title"
 assert_grep "$HOME2_HTML" 'Review: praise private PDF even more' "home: review B title"
-assert_grep "$HOME2_HTML" '\[+2\]' "home: badge +2"
-assert_grep "$HOME2_HTML" '\[+3\]' "home: badge +3"
+assert_grep "$HOME2_HTML" 'liked it a lot' "home: rating +2 in words"
+assert_grep "$HOME2_HTML" 'loved it' "home: rating +3 in words"
 assert_grep "$HOME2_HTML" 'class="rating positive"' "home: positive-rating CSS hook"
 assert_grep "$HOME2_HTML" '\[review\]' "home: [review] marker"
 if printf '%s' "$HOME2_HTML" | grep -q 'nothing public yet.'; then

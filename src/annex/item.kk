@@ -79,6 +79,35 @@ pub fun rating-stars( r : int ) : string
   elif r < 0 then "☆".repeat(0 - r)
   else ""
 
+// A THREE-SLOT star bar so the magnitude reads unambiguously as "out of 3":
+// |r| filled ★ then the remaining slots hollow ☆ (e.g. +2 and -2 both render
+// "★★☆"). Direction is carried by colour + the word phrase, not the glyph.
+// "" for unrated or out-of-range.
+pub fun rating-stars3( r : int ) : string
+  if r == rating-unrated || r < -3 || r > 3 then ""
+  else
+    val m = if r < 0 then 0 - r else r
+    "★".repeat(m) ++ "☆".repeat(3 - m)
+
+// Plain-words description of a rating on the -3..+3 scale ("" for unrated).
+// This is the primary, unambiguous rating display — stars alone don't say
+// "out of how many".
+pub fun rating-phrase( r : int ) : string
+  if r == 3 then "loved it"
+  elif r == 2 then "liked it a lot"
+  elif r == 1 then "liked it"
+  elif r == 0 then "neutral"
+  elif r == -1 then "disliked it"
+  elif r == -2 then "disliked it a lot"
+  elif r == -3 then "hated it"
+  else ""
+
+// Signed numeral for the rating: "+2", "0", "-3". "" for unrated.
+pub fun rating-signed( r : int ) : string
+  if r == rating-unrated then ""
+  elif r > 0 then "+" ++ r.show
+  else r.show
+
 // True iff `i` is structurally a review of another item.
 pub fun annex-item/is-review( i : annex-item ) : bool
   i.in-reply-to != ""

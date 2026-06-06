@@ -223,6 +223,17 @@ fetch_html_anon() {
          "http://x$path"
 }
 
+# Fetch an item as ActivityPub JSON, anonymously (Accept: ld+json triggers
+# prefers-jsonld). Used to prove an archived blob leaks no URL even in the
+# machine-readable representation a scraper would request.
+fetch_ap_anon() {
+    local sock="$1" path="$2"
+    curl --silent --show-error \
+         --unix-socket "$sock" \
+         -H "Accept: application/ld+json" \
+         "http://x$path"
+}
+
 # Block until SOCK accepts an HTTP request or TIMEOUT seconds elapse.
 #
 # We probe with `curl --unix-socket` rather than `nc -U -z`: on macOS,
