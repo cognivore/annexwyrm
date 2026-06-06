@@ -46,6 +46,7 @@ import ap/outbox
 import ap/inbox
 import ap/deliver_worker
 import ap/persist
+import annex/item         // fresh-item, for `delete` (build a minimal shell)
 import web/handler/item   // load-item, for `publish` (re-announce)
 import web/route
 import web/server
@@ -63,12 +64,13 @@ pub fun main() : io ()
     Cons("dump-actor", _)       -> cmd-dump-actor()
     Cons("publish", Cons(i, _)) -> cmd-publish(i)
     Cons("refresh", Cons(i, _)) -> cmd-refresh(i)
+    Cons("delete", Cons(i, _))  -> cmd-delete(i)
     Cons("follow", Cons(a, _))  -> cmd-follow(a)
     Cons("unfollow", Cons(a, _)) -> cmd-unfollow(a)
     _ -> usage()
 
 fun usage() : console ()
-  println("usage: annexwyrm <serve|drain|init DIR|dump-actor|publish ID|refresh ID|follow URL|unfollow URL>")
+  println("usage: annexwyrm <serve|drain|init DIR|dump-actor|publish ID|refresh ID|delete ID|follow URL|unfollow URL>")
 
 // ----------------------------------------------------------------------
 //  init: create database + minted keypair
@@ -299,6 +301,30 @@ fun cmd-refresh( item-id : string ) : io ()
         emit-delete(it)
         emit-create(it)
         println("emitted Delete + Create for " ++ full)
+
+// Tombstone an item on remote servers: emit a Delete (Tombstone) for its id.
+// Only id + owner matter for the Delete, so this works even after the local
+// item row is gone — build a minimal shell. Accepts a full URL or a slug.
+fun cmd-delete( item-id : string ) : io ()
+  with with-env-config
+  with with-console-log
+  with with-real-time
+  with with-urandom-rng
+  with with-openssl-crypto
+  with with-curl-deliver
+  with with-process-shell
+  with with-rclone-store
+  val h = kk-db-open(get-data-dir() ++ "/annexwyrm.db")
+  if h < 0 then println("db open failed")
+  else
+    with with-sqlite-db(h)
+    val full = if item-id.starts-with("http").bool then item-id
+               else get-base-url() ++ "/items/" ++ item-id
+    val owner = get-base-url() ++ "/users/" ++ get-local-username()
+    val shell = fresh-item(full, owner, OkNote, "", "", 0, "", now-iso())
+    info("cli/delete", [("id", full)])
+    emit-delete(shell)
+    println("emitted Delete for " ++ full)
 
 fun cmd-follow( target-url : string ) : io ()
   with with-env-config
