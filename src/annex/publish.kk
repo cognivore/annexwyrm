@@ -92,3 +92,25 @@ pub fun publish-file-item(
     i.published-at, now,
     remotes
   )
+
+// Apply a metadata edit to a review, advancing `updated-at`. Only the
+// human-authored fields change — title, abstract/CW, body HTML, rating,
+// and the review-of target. The file blob and ALL of its publication
+// state (`file-published`, the minted URLs, the mirror remotes, the byte
+// size + hash) carry through untouched: editing the review text must
+// never republish or retract the file. Positional literal (no
+// record-update) to keep koka#654's value-struct-in-lambda panic clear,
+// exactly like `publish-file-item` above.
+pub fun edit-item-fields(
+    i : annex-item, name : string, summary : string, content : string,
+    rating : int, in-reply-to : url, now : iso-time
+  ) : annex-item
+  Annex-item(
+    i.id, i.owner, i.kind,
+    name, summary, content, i.media-type,
+    i.byte-size, i.sha256-hex,
+    rating, in-reply-to,
+    i.file-published, i.file-public-url, i.file-view-url,
+    i.published-at, now,
+    i.remotes
+  )

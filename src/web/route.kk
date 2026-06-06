@@ -74,6 +74,10 @@ pub fun dispatch( req : request )
     // Items ---------------------------------------------------------------
     ("GET",    Cons("items", Cons(id, Nil))) ->
       handle-item(req, id)
+    ("GET",    Cons("items", Cons(id, Cons("edit", Nil)))) ->
+      handle-item-edit-form(req, id)
+    ("POST",   Cons("items", Cons(id, Cons("edit", Nil)))) ->
+      handle-item-edit-post(req, id)
     ("POST",   Cons("items", Cons(id, Cons("publish-file", Nil)))) ->
       handle-item-publish-file(req, id)
 

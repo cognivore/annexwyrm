@@ -97,6 +97,43 @@ post_action() {
     printf '%s\t%s' "$code" "$loc"
 }
 
+# Edit a review's metadata via POST /items/<slug>/edit. The edit form is
+# application/x-www-form-urlencoded (no file part), so this uses
+# --data-urlencode, NOT multipart. Args:
+#   sock jar slug name summary content rating in_reply_to
+# Returns "<http_code>\t<location>".
+edit_item() {
+    local sock="$1" jar="$2" slug="$3"
+    local name="$4" summary="$5" content="$6" rating="$7" in_reply_to="$8"
+    local hdr; hdr=$(mktemp)
+    local code
+    code=$(curl --silent --show-error \
+                --unix-socket "$sock" --cookie "$jar" \
+                --data-urlencode "name=$name" \
+                --data-urlencode "summary=$summary" \
+                --data-urlencode "content=$content" \
+                --data-urlencode "rating=$rating" \
+                --data-urlencode "in_reply_to=$in_reply_to" \
+                --output /dev/null --dump-header "$hdr" \
+                --write-out '%{http_code}' \
+                "http://x/items/$slug/edit")
+    local loc
+    loc=$(grep -i '^location:' "$hdr" | head -1 \
+          | sed -E 's/^[^:]*:[[:space:]]*//' | tr -d '\r')
+    rm -f "$hdr"
+    printf '%s\t%s' "$code" "$loc"
+}
+
+# Attempt an edit with NO session cookie — the owner-gate probe. Returns
+# just the HTTP code (we expect 403).
+edit_item_anon() {
+    local sock="$1" slug="$2"
+    curl --silent --output /dev/null --write-out '%{http_code}' \
+         --unix-socket "$sock" \
+         --data-urlencode "name=HACKED BY ANON" \
+         "http://x/items/$slug/edit"
+}
+
 # Log in: POST /login with form-encoded credentials, save Set-Cookie
 # into a jar file. Subsequent requests use that jar.
 login() {

@@ -96,18 +96,78 @@ fun hex-char( n : int ) : char
 
 // Decode a percent-encoded string. Best-effort; invalid escapes pass
 // through unchanged.
+//
+// CRITICAL: this is done in TWO phases because a `%XX` escape names a
+// single BYTE, not a codepoint. A browser url-encodes the UTF-8 title
+// "Café" as `Caf%C3%A9` — the two bytes 0xC3 0xA9 ARE the single
+// codepoint 'é'. Decoding byte-by-byte into Koka chars (codepoints) and
+// re-serialising would yield the two Latin-1 codepoints "Ã©" (mojibake),
+// corrupting every accented / CJK / emoji character. So phase 1 resolves
+// escapes + '+' into a flat byte list, and phase 2 re-interprets that
+// byte list as UTF-8. (This matters most for the edit form, the first
+// path to round-trip rich user text through query-parse; uploads use
+// multipart, which carries the body's UTF-8 bytes verbatim.)
 pub fun url-decode( s : string ) : div string
-  decode-chars(s.list, [])
+  utf8-assemble(collect-bytes(s.list, [])).string
 
-fun decode-chars( cs : list<char>, acc : list<char> ) : div string
+// Phase 1 — resolve %XX escapes and '+' into a flat byte list. A literal
+// char contributes its codepoint, which equals its byte for ASCII (all a
+// conformant form-urlencoded body contains); a raw multibyte literal
+// falls through utf8-assemble's else branch unchanged. Invalid `%`
+// escapes pass through as the literal '%'.
+fun collect-bytes( cs : list<char>, acc : list<int> ) : div list<int>
   match cs
-    Nil -> acc.reverse.string
+    Nil -> acc.reverse
     Cons('%', Cons(a, Cons(b, rest))) ->
       match parse-hex-byte(a, b)
-        Just(byte) -> decode-chars(rest, Cons(byte.char, acc))
-        Nothing    -> decode-chars(Cons(a, Cons(b, rest)), Cons('%', acc))
-    Cons('+', rest) -> decode-chars(rest, Cons(' ', acc))
-    Cons(c, rest)   -> decode-chars(rest, Cons(c, acc))
+        Just(byte) -> collect-bytes(rest, Cons(byte, acc))
+        Nothing    -> collect-bytes(Cons(a, Cons(b, rest)), Cons('%'.int, acc))
+    Cons('+', rest) -> collect-bytes(rest, Cons(' '.int, acc))
+    Cons(c, rest)   -> collect-bytes(rest, Cons(c.int, acc))
+
+// Phase 2 — interpret the byte list as UTF-8, producing codepoints. A
+// well-formed 2/3/4-byte sequence collapses to its single codepoint; any
+// invalid unit (stray continuation, truncated sequence, or a raw
+// codepoint >= 0x80 that isn't a UTF-8 lead) falls back to a direct
+// codepoint, preserving the old best-effort behaviour for non-UTF-8 input.
+fun utf8-assemble( bs : list<int> ) : div list<char>
+  utf8-go(bs, [])
+
+fun utf8-go( bs : list<int>, acc : list<char> ) : div list<char>
+  match bs
+    Nil -> acc.reverse
+    Cons(b0, rest) ->
+      if b0 < 0x80 then
+        utf8-go(rest, Cons(b0.char, acc))
+      elif b0 >= 0xc0 && b0 < 0xe0 then
+        match rest
+          Cons(b1, r2) ->
+            if is-cont(b1)
+              then utf8-go(r2, Cons((((b0 - 0xc0) * 0x40) + (b1 - 0x80)).char, acc))
+              else utf8-go(rest, Cons(b0.char, acc))
+          Nil -> utf8-go([], Cons(b0.char, acc))
+      elif b0 >= 0xe0 && b0 < 0xf0 then
+        match rest
+          Cons(b1, Cons(b2, r3)) ->
+            if is-cont(b1) && is-cont(b2)
+              then utf8-go(r3, Cons(
+                (((b0 - 0xe0) * 0x1000) + ((b1 - 0x80) * 0x40) + (b2 - 0x80)).char, acc))
+              else utf8-go(rest, Cons(b0.char, acc))
+          _ -> utf8-go(rest, Cons(b0.char, acc))
+      elif b0 >= 0xf0 && b0 < 0xf8 then
+        match rest
+          Cons(b1, Cons(b2, Cons(b3, r4))) ->
+            if is-cont(b1) && is-cont(b2) && is-cont(b3)
+              then utf8-go(r4, Cons(
+                (((b0 - 0xf0) * 0x40000) + ((b1 - 0x80) * 0x1000) +
+                 ((b2 - 0x80) * 0x40) + (b3 - 0x80)).char, acc))
+              else utf8-go(rest, Cons(b0.char, acc))
+          _ -> utf8-go(rest, Cons(b0.char, acc))
+      else
+        utf8-go(rest, Cons(b0.char, acc))
+
+fun is-cont( b : int ) : bool
+  b >= 0x80 && b < 0xc0
 
 fun parse-hex-byte( a : char, b : char ) : maybe<int>
   match (hex-val(a), hex-val(b))
@@ -125,8 +185,11 @@ pub fun query-parse( s : string ) : div list<(string,string)>
   if s == "" then []
   else s.split("&").map(fn(pair) parse-pair(pair))
 
+// Split each pair on the FIRST '=' only. `split("=")` would discard
+// everything after a second '=', truncating values that legitimately
+// contain one — most notably a `review of` URL carrying a query string
+// (https://host/items/x?ref=y). find + before/after keeps the value whole.
 fun parse-pair( p : string ) : div (string,string)
-  match p.split("=")
-    Cons(k, Cons(v, _)) -> (url-decode(k), url-decode(v))
-    Cons(k, Nil)        -> (url-decode(k), "")
-    Nil                 -> ("", "")
+  match p.find("=")
+    Nothing   -> (url-decode(p), "")
+    Just(slc) -> (url-decode(slc.before.string), url-decode(slc.after.string))

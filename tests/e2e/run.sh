@@ -660,6 +660,216 @@ else
         || { red "publish-later public copy differs — blob-get mangled the bytes"; exit 1; }
 fi
 
+# ===========================================================================
+#  Step I — EDIT review metadata. The first real review went up "(untitled)"
+#  because the title field arrived empty; there was no way to fix it after
+#  upload. Editing changes ONLY the human-authored fields (title, abstract,
+#  body, rating, review-of), advances updated_at, federates an Update, and
+#  leaves the file blob and its publication state completely untouched.
+# ===========================================================================
+note "=== Step I — edit review metadata federates an Update ==="
+EDIT_PATH=$(upload "$SOCK" "$JAR" "$PDF_TWO" \
+    "Pre-edit Title" "" "<p>original body</p>" "99" "")
+EDIT_URL="http://localhost$EDIT_PATH"
+EDIT_SLUG="${EDIT_PATH##*/}"
+green "  item to edit: $EDIT_PATH (slug $EDIT_SLUG)"
+
+# Baseline: a fresh upload has exactly one Create and no Update, and the
+# blob's identity (size + hash) is what the edit must preserve.
+assert_sql "$DB" "SELECT count(*) FROM activity WHERE type='Update' AND object_id='$EDIT_URL';" \
+    "0" "no Update before the edit"
+PRE_SIZE=$(sqlite3 "$DB" "SELECT byte_size FROM item WHERE id='$EDIT_URL';")
+PRE_SHA=$(sqlite3 "$DB" "SELECT sha256 FROM item WHERE id='$EDIT_URL';")
+
+# 1s granularity on iso-time: sleep so updated_at strictly advances and the
+# >= assertion is meaningful rather than trivially-equal.
+sleep 1
+E_RESULT=$(edit_item "$SOCK" "$JAR" "$EDIT_SLUG" \
+    "Edited Title" "spoilers ahead" \
+    "<p>edited body with a <a href=\"https://example.test/x\">link</a></p>" \
+    "2" "https://example.test/items/parent")
+E_CODE="${E_RESULT%%$'\t'*}"
+E_LOC="${E_RESULT#*$'\t'}"
+[ "$E_CODE" = "303" ] || { red "edit: expected 303, got $E_CODE"; exit 1; }
+green "  ✓ edit → 303"
+[ "$E_LOC" = "$EDIT_PATH" ] || { red "edit: expected Location $EDIT_PATH, got $E_LOC"; exit 1; }
+green "  ✓ edit Location = $EDIT_PATH"
+
+# (a) DB — every edited field took, updated_at advanced.
+assert_sql "$DB" "SELECT name FROM item WHERE id='$EDIT_URL';" \
+    "Edited Title" "title updated"
+assert_sql "$DB" "SELECT summary FROM item WHERE id='$EDIT_URL';" \
+    "spoilers ahead" "summary updated"
+assert_sql "$DB" "SELECT rating FROM item WHERE id='$EDIT_URL';" \
+    "2" "rating updated (unrated → +2)"
+assert_sql "$DB" "SELECT in_reply_to FROM item WHERE id='$EDIT_URL';" \
+    "https://example.test/items/parent" "review-of target updated"
+assert_sql "$DB" "SELECT (updated_at > published_at) FROM item WHERE id='$EDIT_URL';" \
+    "1" "updated_at advanced past published_at"
+
+# (b) the file blob is INVARIANT under a metadata edit.
+assert_sql "$DB" "SELECT byte_size FROM item WHERE id='$EDIT_URL';" \
+    "$PRE_SIZE" "edit preserves byte_size"
+assert_sql "$DB" "SELECT sha256 FROM item WHERE id='$EDIT_URL';" \
+    "$PRE_SHA" "edit preserves sha256"
+assert_sql "$DB" "SELECT file_published FROM item WHERE id='$EDIT_URL';" \
+    "0" "edit does NOT publish the archived file"
+
+# (c) federation — exactly one Update, the original Create preserved.
+assert_sql "$DB" "SELECT count(*) FROM activity WHERE type='Update' AND object_id='$EDIT_URL';" \
+    "1" "edit emits exactly one Update"
+assert_sql "$DB" "SELECT count(*) FROM activity WHERE type='Create' AND object_id='$EDIT_URL';" \
+    "1" "the original Create is preserved"
+assert_log_grep "$LOG" \
+    "^\[info\] item/edited id=$EDIT_URL rating=2\$" \
+    "edit logged with the new rating"
+
+# (d) the page reflects the edit to everyone.
+E_HTML=$(fetch_html_anon "$SOCK" "$EDIT_PATH")
+assert_grep "$E_HTML" "Edited Title"          "edited title renders to anon"
+assert_grep "$E_HTML" "edited body with a"    "edited body renders to anon"
+assert_grep "$E_HTML" 'review of <a href="https://example.test/items/parent"' \
+    "review-of preamble appears after edit"
+
+# (e) the edit link is owner-only.
+E_HTML_OWNER=$(fetch_html "$SOCK" "$JAR" "$EDIT_PATH")
+assert_grep "$E_HTML_OWNER" "/items/$EDIT_SLUG/edit" "owner sees the edit link"
+if printf '%s' "$E_HTML" | grep -q 'class="edit"'; then
+    red "anonymous item page leaked an edit link"
+    exit 1
+fi
+green "  ✓ edit link is owner-only"
+
+# ===========================================================================
+#  Step J — EDIT owner-gate. An edit with no session must be forbidden and
+#  must not mutate the item (the review is read-only to everyone but its
+#  single local owner).
+# ===========================================================================
+note "=== Step J — edit owner-gate (anonymous edit forbidden) ==="
+J_CODE=$(edit_item_anon "$SOCK" "$EDIT_SLUG")
+[ "$J_CODE" = "403" ] || { red "anonymous edit: expected 403, got $J_CODE"; exit 1; }
+green "  ✓ anonymous edit → 403"
+assert_sql "$DB" "SELECT name FROM item WHERE id='$EDIT_URL';" \
+    "Edited Title" "anonymous edit changed nothing"
+
+# ===========================================================================
+#  Step K — EDIT a REVIEW. A "review" is just an item whose in_reply_to is
+#  non-empty (annex-item/is-review). The first real post on prod was exactly
+#  this shape — a Cube Cobra review that went up "(untitled)". This step
+#  uploads an item that is ALREADY a review at creation, then edits its
+#  title/body/rating AND retargets its review-of, proving reviews are
+#  first-class editable (not only plain items that get a review-of added).
+# ===========================================================================
+note "=== Step K — edit a review (item with in_reply_to) ==="
+REV_PARENT="https://cubecobra.com/cube/about/kamigawa_block_revisited"
+REV_PATH=$(upload "$SOCK" "$JAR" "$PDF_ONE" \
+    "" "" "<p>original review body</p>" "1" "$REV_PARENT")
+REV_URL="http://localhost$REV_PATH"
+REV_SLUG="${REV_PATH##*/}"
+green "  review to edit: $REV_PATH (slug $REV_SLUG)"
+
+# It is a review from the start: in_reply_to set, and the page shows the
+# "review of" preamble even while still "(untitled)".
+assert_sql "$DB" "SELECT in_reply_to FROM item WHERE id='$REV_URL';" \
+    "$REV_PARENT" "uploaded item IS a review (in_reply_to set)"
+K_PRE_HTML=$(fetch_html_anon "$SOCK" "$REV_PATH")
+assert_grep "$K_PRE_HTML" "(untitled)" "review starts untitled (the prod symptom)"
+assert_grep "$K_PRE_HTML" "review of <a href=\"$REV_PARENT\"" "review-of preamble present pre-edit"
+
+sleep 1
+K_RESULT=$(edit_item "$SOCK" "$JAR" "$REV_SLUG" \
+    "Six's Sharpied Kamigawa" "" \
+    "<p>Amazing explainer of game design and a feat of design any magic player dreams of.</p>" \
+    "2" "$REV_PARENT")
+K_CODE="${K_RESULT%%$'\t'*}"
+[ "$K_CODE" = "303" ] || { red "review edit: expected 303, got $K_CODE"; exit 1; }
+green "  ✓ review edit → 303"
+
+# (a) the review is no longer untitled, body+rating updated, STILL a review.
+assert_sql "$DB" "SELECT name FROM item WHERE id='$REV_URL';" \
+    "Six's Sharpied Kamigawa" "review title set (no longer untitled)"
+assert_sql "$DB" "SELECT rating FROM item WHERE id='$REV_URL';" \
+    "2" "review rating updated (+1 → +2)"
+assert_sql "$DB" "SELECT in_reply_to FROM item WHERE id='$REV_URL';" \
+    "$REV_PARENT" "review-of target preserved through the edit"
+
+# (b) it federates an Update (a review edit is an Update, like any item).
+assert_sql "$DB" "SELECT count(*) FROM activity WHERE type='Update' AND object_id='$REV_URL';" \
+    "1" "review edit emits exactly one Update"
+
+# (c) the page now shows the real title AND keeps the review-of preamble.
+K_HTML=$(fetch_html_anon "$SOCK" "$REV_PATH")
+assert_grep "$K_HTML" "Six&#39;s Sharpied Kamigawa" "edited review title renders (apostrophe escaped)"
+assert_grep "$K_HTML" "review of <a href=\"$REV_PARENT\"" "review-of preamble survives the edit"
+if printf '%s' "$K_HTML" | grep -q '(untitled)'; then
+    red "review still shows (untitled) after the edit"
+    exit 1
+fi
+green "  ✓ review no longer untitled"
+
+# (d) retarget the review-of to a different parent — editing the review
+#     relationship itself works.
+sleep 1
+REV_PARENT2="https://cubecobra.com/cube/about/some_other_cube"
+K2_RESULT=$(edit_item "$SOCK" "$JAR" "$REV_SLUG" \
+    "Six's Sharpied Kamigawa" "" \
+    "<p>Amazing explainer of game design and a feat of design any magic player dreams of.</p>" \
+    "2" "$REV_PARENT2")
+K2_CODE="${K2_RESULT%%$'\t'*}"
+[ "$K2_CODE" = "303" ] || { red "review retarget: expected 303, got $K2_CODE"; exit 1; }
+assert_sql "$DB" "SELECT in_reply_to FROM item WHERE id='$REV_URL';" \
+    "$REV_PARENT2" "review-of retargeted to a new parent"
+assert_sql "$DB" "SELECT count(*) FROM activity WHERE type='Update' AND object_id='$REV_URL';" \
+    "2" "the retarget emits a second Update"
+green "  ✓ review-of is itself editable"
+
+# ===========================================================================
+#  Step L — EDIT encoding round-trips. The edit form is form-urlencoded, the
+#  first path to round-trip rich user text through query-parse/url-decode.
+#  This guards the three bugs the adversarial review surfaced:
+#    (a) multibyte UTF-8 corruption (%C3%A9 is one codepoint 'é', not two),
+#    (b) '+'-as-space + %27-apostrophe (exactly how a browser posts a title
+#        like "Six's Sharpied Kamigawa"),
+#    (c) a 'review of' URL with a query string truncating at the first '='.
+# ===========================================================================
+note "=== Step L — edit encoding round-trips (UTF-8 / + / %27 / =) ==="
+ENC_PATH=$(upload "$SOCK" "$JAR" "$PDF_ONE" "enc seed" "" "<p>seed</p>" "99" "")
+ENC_URL="http://localhost$ENC_PATH"
+ENC_SLUG="${ENC_PATH##*/}"
+
+# (a) UTF-8 title with accents, an em dash, an apostrophe, stars and an
+#     emoji — curl --data-urlencode encodes each UTF-8 byte as %XX, the
+#     same bytes a browser sends. Must round-trip byte-exact (no mojibake).
+UTITLE="Café déjà — Six's ★★ 🎴"
+edit_item "$SOCK" "$JAR" "$ENC_SLUG" "$UTITLE" "" "<p>seed</p>" "2" "" >/dev/null
+assert_sql "$DB" "SELECT name FROM item WHERE id='$ENC_URL';" \
+    "$UTITLE" "UTF-8 title round-trips byte-exact (no mojibake)"
+ENC_HTML=$(fetch_html_anon "$SOCK" "$ENC_PATH")
+assert_grep "$ENC_HTML" "Café déjà" "accented title renders on the page"
+assert_grep "$ENC_HTML" "🎴" "emoji in the title renders on the page"
+
+# (b) the browser wire form: spaces as '+', apostrophe as %27, HTML as
+#     percent-escapes. Hand-built body (NOT --data-urlencode) to exercise
+#     the '+' path that --data-urlencode (which uses %20) would not.
+curl --silent --output /dev/null --unix-socket "$SOCK" --cookie "$JAR" \
+     --data 'name=Six%27s+Sharpied+Kamigawa&summary=&content=%3Cp%3Ex%3C%2Fp%3E&rating=2&in_reply_to=' \
+     "http://x/items/$ENC_SLUG/edit"
+assert_sql "$DB" "SELECT name FROM item WHERE id='$ENC_URL';" \
+    "Six's Sharpied Kamigawa" "'+'→space and %27→apostrophe (browser form encoding)"
+assert_sql "$DB" "SELECT content FROM item WHERE id='$ENC_URL';" \
+    "<p>x</p>" "percent-escaped HTML content decodes"
+
+# (c) a review-of URL carrying a query string must survive whole — split on
+#     the FIRST '=' only, not every '='.
+QURL="https://cubecobra.com/cube/list/abc?view=table&sort=cmc"
+curl --silent --output /dev/null --unix-socket "$SOCK" --cookie "$JAR" \
+     --data-urlencode "name=$UTITLE" --data-urlencode "summary=" \
+     --data-urlencode "content=<p>seed</p>" --data-urlencode "rating=2" \
+     --data-urlencode "in_reply_to=$QURL" \
+     "http://x/items/$ENC_SLUG/edit"
+assert_sql "$DB" "SELECT in_reply_to FROM item WHERE id='$ENC_URL';" \
+    "$QURL" "review-of URL with query '=' is not truncated"
+
 green ""
 green "=========================================="
 green "  e2e (socket) passed.  data dir: $DATA"

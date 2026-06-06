@@ -4,6 +4,7 @@ module web/handler/item
 
 import core/types
 import core/json
+import core/url
 import effects/db
 import effects/time
 import effects/rng
@@ -16,6 +17,7 @@ import annex/item
 import annex/publish
 import web/server
 import web/html/item
+import web/html/edit
 
 // Every item is always public: the review renders to ANYONE. There is no
 // owner-only item view and no 404-for-private branch — the only thing that
@@ -66,6 +68,60 @@ pub fun handle-item-publish-file( req : request, id : string )
               else
                 server-error("public put failed: blob could not be published to " ++
                              get-public-remote())
+
+// GET /items/<id>/edit — the owner's edit form, pre-filled with the
+// item's current review metadata. Owner-gated; anonymous visitors and
+// non-owners are forbidden (the form is the only way to mutate a review).
+pub fun handle-item-edit-form( req : request, id : string )
+  : <db,config|e> response
+  if !is-owner-session(req) then forbidden("login required")
+  else
+    val full-id = get-base-url() ++ "/items/" ++ id
+    match load-item(full-id)
+      Nothing -> not-found("no such item")
+      Just(it) -> ok-html(render-edit-form(it, id))
+
+// POST /items/<id>/edit — apply a metadata edit and federate an Update.
+// Owner-gated. Body is application/x-www-form-urlencoded (no file part).
+// Each field defaults to the item's CURRENT value when ABSENT from the
+// form, but a present-but-empty field is an intentional clear (e.g.
+// blanking the title back to "(untitled)"). The file blob and its
+// publication state are never touched here.
+pub fun handle-item-edit-post( req : request, id : string )
+  : <db,time,rng,log,config,div|e> response
+  if !is-owner-session(req) then forbidden("login required")
+  else
+    val full-id = get-base-url() ++ "/items/" ++ id
+    match load-item(full-id)
+      Nothing -> not-found("no such item")
+      Just(it) ->
+        val form = query-parse(req.body)
+        val name = form-lookup(form, "name").default(it.name)
+        val summary = form-lookup(form, "summary").default(it.summary)
+        val content = form-lookup(form, "content").default(it.content)
+        val rating = clamp-rating(
+          form-lookup(form, "rating").default(it.rating.show).parse-int.default(it.rating))
+        val in-reply-to = form-lookup(form, "in_reply_to").default(it.in-reply-to)
+        val now = now-iso()
+        ship-edited-item(
+          edit-item-fields(it, name, summary, content, rating, in-reply-to, now))
+        info("item/edited", [("id", full-id), ("rating", rating.show)])
+        see-other("/items/" ++ id)
+
+// Effectful tail for an edit: persist the already-built item and federate
+// the Update. The item is a PARAMETER (not a local capture) and this
+// returns () — the koka#654-safe shape shared with ship-published-item.
+fun ship-edited-item( it : annex-item )
+  : <db,time,rng,log,config,div|e> ()
+  save-item(it)
+  emit-update(it)
+
+// Look up a form field, distinguishing "absent" (Nothing → keep current)
+// from "present but empty" (Just "" → intentional clear).
+fun form-lookup( fs : list<(string,string)>, k : string ) : maybe<string>
+  match fs
+    Nil -> Nothing
+    Cons((k0,v), rest) -> if k0 == k then Just(v) else form-lookup(rest, k)
 
 // ----------------------------------------------------------------------
 //  The publish-file body — shared by upload-with-publish_file and the

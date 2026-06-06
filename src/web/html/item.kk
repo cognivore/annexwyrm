@@ -32,6 +32,7 @@ pub fun render-item-page( i : annex-item, likes : int, shares : int, is-owner : 
     summary-block(i),
     content-block(i),
     file-state-block(i, is-owner),
+    owner-actions-block(i, is-owner),
     "</article>"
   ]).join("\n")
   layout(title, jsonld, "<a href=\"/items/\">items</a> · " ++ esc(title), body)
@@ -83,3 +84,13 @@ fun file-state-block( i : annex-item, is-owner : bool ) : string
            "    <button type=\"submit\">publish file</button>\n" ++
            "  </form>"
     "  <p class=\"file-state archived\">file archived, not published</p>" ++ action
+
+// Owner-only review actions (edit). Anonymous visitors see nothing — a
+// review is read-only to everyone but its single local owner. The blob's
+// publish-file action lives in file-state-block; this is the text edit.
+fun owner-actions-block( i : annex-item, is-owner : bool ) : string
+  if !is-owner then ""
+  else
+    val tail = i.id.split("/").reverse.head.default("")
+    "  <p class=\"owner-actions\"><a class=\"edit\" href=\"/items/" ++
+      esc(tail) ++ "/edit\">edit</a></p>"
