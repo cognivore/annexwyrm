@@ -174,3 +174,31 @@ item page renders a small "review of &lt;hyperlinked URL&gt;" preamble
 above the title. The review's `content` is HTML, so `<a href="…">`
 inside it Just Works — that's what the e2e test verifies once we get the
 binary to build.
+
+## Bridge record framing (the binary-body invariant)
+
+Every C↔Koka bridge record framed with `\x1f` separators carries AT
+MOST ONE binary field, and that field goes LAST. Real binary payloads
+(PDF/JPEG/audio) contain `0x1F` about once per 256 bytes, so a binary
+field anywhere else silently truncates at the first one — which is
+exactly how the first real phone upload to prod died with "expected
+multipart/form-data" while every ASCII-fixture e2e stayed green.
+
+The rule, enforced at each site:
+
+- C encoders strip `0x1F` from every NON-final field (hostile local
+  socket peers and hostile federation remotes must not be able to
+  shift the frame), and append the binary field raw after the last
+  separator. See `socket_server.c` (request → `…\x1fHEADERS\x1fBODY`),
+  `proc_bridge.c` (spawn → `EXIT\x1fSTDERR\x1fSTDOUT`),
+  `curl_bridge.c` (response → `STATUS\x1fHEADERS\x1fBODY`).
+- Koka decoders use `split-limit` (`interp/str`): peel the n
+  separator-free fields, keep the remainder byte-exact. Never
+  `split("\x1f")` a record whose last field can be binary.
+- Sizes of binary-in-string data use `byte-count`, never `.count`
+  (codepoint counting skips UTF-8 continuation bytes and undercounts).
+
+Regression coverage: `tests/e2e/run.sh` Steps G/H upload fixtures
+containing every byte value 0x00–0xFF and assert byte-exact blobs and
+exact `byte_size`/`sha256` through upload, publish-on-upload, and
+publish-later (`blob-get`).
