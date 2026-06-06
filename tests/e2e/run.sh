@@ -870,6 +870,30 @@ curl --silent --output /dev/null --unix-socket "$SOCK" --cookie "$JAR" \
 assert_sql "$DB" "SELECT in_reply_to FROM item WHERE id='$ENC_URL';" \
     "$QURL" "review-of URL with query '=' is not truncated"
 
+# ===========================================================================
+#  Step M — edit a PUBLISHED review. The first real prod review is published
+#  (a download link is live), and editing it must keep the file published
+#  with its minted URL intact — a text edit never retracts the download.
+#  ARCH (Steps A/B) is exactly that: published with a public URL.
+# ===========================================================================
+note "=== Step M — edit a published review keeps its download link ==="
+M_PRE_URL=$(sqlite3 "$DB" "SELECT file_public_url FROM item WHERE id='$ARCH_URL';")
+[ -n "$M_PRE_URL" ] || { red "precondition: ARCH item should have a public URL by now"; exit 1; }
+sleep 1
+edit_item "$SOCK" "$JAR" "$ARCH_SLUG" \
+    "Published And Edited" "" "<p>edited published body</p>" "3" "" >/dev/null
+assert_sql "$DB" "SELECT name FROM item WHERE id='$ARCH_URL';" \
+    "Published And Edited" "published item's title edited"
+assert_sql "$DB" "SELECT rating FROM item WHERE id='$ARCH_URL';" \
+    "3" "published item's rating edited"
+assert_sql "$DB" "SELECT file_published FROM item WHERE id='$ARCH_URL';" \
+    "1" "edit KEEPS the file published"
+assert_sql "$DB" "SELECT file_public_url FROM item WHERE id='$ARCH_URL';" \
+    "$M_PRE_URL" "edit preserves the minted download URL"
+M_HTML=$(fetch_html_anon "$SOCK" "$ARCH_PATH")
+assert_grep "$M_HTML" 'class="download"'  "published+edited page still shows the download link"
+assert_grep "$M_HTML" "Published And Edited" "published+edited title renders"
+
 green ""
 green "=========================================="
 green "  e2e (socket) passed.  data dir: $DATA"
