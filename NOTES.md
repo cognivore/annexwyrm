@@ -202,3 +202,27 @@ Regression coverage: `tests/e2e/run.sh` Steps G/H upload fixtures
 containing every byte value 0x00–0xFF and assert byte-exact blobs and
 exact `byte_size`/`sha256` through upload, publish-on-upload, and
 publish-later (`blob-get`).
+
+## Editing reviews
+
+GET/POST /items/<id>/edit (owner-gated) edits a review's title, abstract,
+body HTML, rating, and review-of target. It federates an AP `Update` and
+never touches the file blob or its publication state — editing text does
+not republish or retract the file. A review (item with in_reply_to) is
+first-class editable, including retargeting the review-of link, and a
+PUBLISHED review keeps its download link through an edit. The form is
+application/x-www-form-urlencoded (no file part), parsed by query-parse.
+
+url-decode is two-phase (resolve %XX/'+' to bytes, then re-interpret as
+UTF-8) so multibyte titles (accents, CJK, emoji) round-trip byte-exact;
+the edit form is the first path to send rich user text through query-parse
+(uploads use multipart). parse-pair splits on the first '=' only.
+
+### Known follow-up (low priority)
+- item_remote.created_at is rewritten to the edit time on every save-item
+  (save-remote writes i.updated-at, not a per-remote created_at). Harmless
+  today — created_at is not selected by load-remotes nor displayed — but
+  to make it faithful, add a created-at field to the item-remote value
+  struct, SELECT it in load-remotes, set it in fresh-remote, and write
+  r.created-at in save-remote. Touches the positional Item-remote literals
+  in upload.kk and publish.kk; keep them positional (koka#654).
