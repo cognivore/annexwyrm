@@ -497,6 +497,65 @@ assert_sql "$FAIL_DB" "SELECT count(*) FROM activity;" \
 kill "$FAIL_PID" 2>/dev/null || true; wait "$FAIL_PID" 2>/dev/null || true
 FAIL_PID=""
 
+# ===========================================================================
+#  Step F — MIGRATED-DB write path. Every other step runs on a fresh DB,
+#  which is exactly how the first real prod upload broke: the old schema's
+#  `privacy TEXT NOT NULL` (no default) column survived migration as a dead
+#  column, the new save-item INSERT didn't supply it, the exec return was
+#  discarded, and the item row silently vanished while the Create activity
+#  and archived blob persisted. This step builds a faithful OLD-shape DB,
+#  lets init migrate it (which must DROP the dead column), then drives one
+#  real upload through the daemon and asserts the item row EXISTS.
+# ===========================================================================
+note "=== Step F — migrated old-schema DB accepts uploads ==="
+MIG_DATA="$TMP/mig-data"; MIG_SOCK="$TMP/mig-sock"; MIG_LOG="$TMP/mig.log"
+MIG_JAR="$TMP/mig-jar"; mkdir -p "$MIG_DATA"
+# Old-shape item table: privacy TEXT NOT NULL + the old index, pre-dating
+# the file_* columns. (Faithful to the pre-file-publication schema.)
+sqlite3 "$MIG_DATA/annexwyrm.db" <<'OLDSQL'
+CREATE TABLE item (
+  id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, object_type TEXT NOT NULL,
+  privacy TEXT NOT NULL, name TEXT NOT NULL, summary TEXT, content TEXT,
+  media_type TEXT, byte_size INTEGER, sha256 TEXT,
+  rating INTEGER, in_reply_to TEXT,
+  published_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE INDEX item_privacy_published ON item(privacy, published_at);
+OLDSQL
+ANNEXWYRM_DOMAIN="localhost" ANNEXWYRM_BASE_URL="http://localhost" \
+ANNEXWYRM_USERNAME="alice" ANNEXWYRM_INSTANCE_NAME="mig e2e" \
+ANNEXWYRM_PASSWORD="$TEST_PASS" ANNEXWYRM_DATA="$MIG_DATA" \
+    "$BINARY" init "$MIG_DATA" >/dev/null 2>&1
+MIG_COLS=$(sqlite3 "$MIG_DATA/annexwyrm.db" "PRAGMA table_info(item);" | awk -F'|' '{print $2}' | tr '\n' ' ')
+if printf '%s' "$MIG_COLS" | grep -qw "privacy"; then
+    red "migration kept the dead privacy column (NOT NULL would break inserts): $MIG_COLS"
+    exit 1
+fi
+green "  ✓ migration DROPPED the dead privacy column"
+case "$MIG_COLS" in
+    *file_published*) green "  ✓ migrated DB has file_published" ;;
+    *) red "migrated DB missing file_published: $MIG_COLS"; exit 1 ;;
+esac
+ANNEXWYRM_DOMAIN="localhost" ANNEXWYRM_BASE_URL="http://localhost" \
+ANNEXWYRM_USERNAME="alice" ANNEXWYRM_INSTANCE_NAME="mig e2e" \
+ANNEXWYRM_SOCKET="$MIG_SOCK" ANNEXWYRM_DATA="$MIG_DATA" \
+ANNEXWYRM_ARCHIVE_REMOTE="$ARCHIVE_REMOTE" \
+ANNEXWYRM_PUBLIC_REMOTE="$PUBLIC_REMOTE" \
+ANNEXWYRM_PUBLIC_URL_BASE="$PUBLIC_URL_BASE" \
+ANNEXWYRM_SERVE_DRAIN=0 \
+    "$BINARY" serve > "$MIG_LOG" 2>&1 &
+FAIL_PID=$!   # reuse the cleanup-trapped pid slot
+wait_for_socket "$MIG_SOCK" 10
+login "$MIG_SOCK" "$MIG_JAR" "alice" "$TEST_PASS"
+MIG_PATH=$(upload "$MIG_SOCK" "$MIG_JAR" "$PDF_ONE" \
+    "Migrated Upload" "" "<p>written through a migrated DB</p>" "1" "")
+assert_sql "$MIG_DATA/annexwyrm.db" \
+    "SELECT count(*) FROM item WHERE name='Migrated Upload';" \
+    "1" "item row EXISTS on the migrated DB (the prod regression)"
+assert_status "$MIG_SOCK" "$MIG_PATH" 200
+kill "$FAIL_PID" 2>/dev/null || true; wait "$FAIL_PID" 2>/dev/null || true
+FAIL_PID=""
+
 green ""
 green "=========================================="
 green "  e2e (socket) passed.  data dir: $DATA"
