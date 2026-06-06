@@ -9,6 +9,7 @@
 
 #include <curl/curl.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -196,6 +197,12 @@ kk_string_t kk_aw_curl(kk_string_t method, kk_string_t url,
     CURLcode rc = curl_easy_perform(curl);
     if (rc == CURLE_OK) {
       curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+    } else {
+      /* Surface the transport error (TLS, DNS, connect, refused-by-SSRF…)
+       * instead of swallowing it as a bare status 0. */
+      fprintf(stderr, "[error] curl/perform method=%s url=%s rc=%d msg=%s\n",
+              m, u, (int)rc, curl_easy_strerror(rc));
+      fflush(stderr);
     }
     if (hlist) curl_slist_free_all(hlist);
     curl_easy_cleanup(curl);
