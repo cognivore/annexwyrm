@@ -452,15 +452,15 @@ if printf '%s' "$HOME_HTML" | grep -qiE 'class="meta">[^<]*· (public|private|un
 fi
 green "  ✓ no privacy word on the home list"
 
-note "  review B page contains the hyperlink + three stars + review-of"
+note "  review B page contains the hyperlink + rating word + review-of"
 REVIEW_B_HTML=$(fetch_html_anon "$SOCK" "$REVIEW_B_PATH")
 assert_grep "$REVIEW_B_HTML" "href=\"$TWO_URL\"" "hyperlink to PDF two"
-assert_grep "$REVIEW_B_HTML" "★★★"               "three full stars on review B"
+assert_grep "$REVIEW_B_HTML" "loved it"          "rating +3 reads 'loved it' (words only)"
 assert_grep "$REVIEW_B_HTML" "review of"          "review-of badge"
 
 note "  review A page rates +2 and links to PDF one"
 REVIEW_A_HTML=$(fetch_html_anon "$SOCK" "$REVIEW_A_PATH")
-assert_grep "$REVIEW_A_HTML" "★★"        "two full stars on review A"
+assert_grep "$REVIEW_A_HTML" "liked it a lot" "rating +2 reads 'liked it a lot' (words only)"
 assert_grep "$REVIEW_A_HTML" "$ARCH_URL" "review A links to PDF one"
 
 note "  every item is reachable anonymously (no 404-for-private)"
@@ -847,10 +847,11 @@ assert_sql "$DB" "SELECT count(*) FROM activity WHERE type='Update' AND object_i
 K_HTML=$(fetch_html_anon "$SOCK" "$REV_PATH")
 assert_grep "$K_HTML" "Six&#39;s Sharpied Kamigawa" "edited review title renders (apostrophe escaped)"
 assert_grep "$K_HTML" "review of <a href=\"$REV_PARENT\"" "review-of preamble survives the edit"
-# rating is shown in WORDS (not just ambiguous stars) + a 3-slot bar.
+# rating is shown in plain WORDS only — no stars, no numeric score.
 assert_grep "$K_HTML" "liked it a lot" "rating shown in words (+2 = 'liked it a lot')"
-assert_grep "$K_HTML" "★★☆" "rating shows a 3-slot bar so magnitude reads as out-of-3"
-assert_grep "$K_HTML" "of ±3" "rating shows the explicit out-of-range hint"
+if printf '%s' "$K_HTML" | grep -qE '★|☆|of ±3'; then
+    red "rating still renders stars or a numeric score"; exit 1; fi
+green "  ✓ rating is words only (no stars, no score)"
 if printf '%s' "$K_HTML" | grep -q '(untitled)'; then
     red "review still shows (untitled) after the edit"
     exit 1
@@ -962,7 +963,6 @@ M_HTML=$(fetch_html_anon "$SOCK" "$ARCH_PATH")
 assert_grep "$M_HTML" 'class="download"'  "published+edited page still shows the download link"
 assert_grep "$M_HTML" "Published And Edited" "published+edited title renders"
 assert_grep "$M_HTML" "loved it" "rating +3 reads 'loved it' in words"
-assert_grep "$M_HTML" "★★★" "rating +3 fills all three slots"
 # the home list also describes ratings in words, not bare stars.
 M_HOME=$(fetch_html_anon "$SOCK" "/")
 assert_grep "$M_HOME" "loved it" "home list shows the rating in words"

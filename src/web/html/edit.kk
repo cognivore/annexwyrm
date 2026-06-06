@@ -35,9 +35,6 @@ pub fun render-edit-form( i : annex-item, id : string, tags : list<string> ) : s
     "  </fieldset>",
     "  <fieldset>",
     "    <legend>rating &amp; review</legend>",
-    "    <p class=\"hint\">rate this on a 7-point scale — <code>-3</code> hated it, " ++
-      "<code>0</code> neutral, <code>+3</code> loved it. <em>review of</em> is the " ++
-      "URL of the item you're reviewing.</p>",
     "    <label>rating:",
     "      <select name=\"rating\">",
     rating-options(i.rating),
@@ -59,14 +56,14 @@ pub fun render-edit-form( i : annex-item, id : string, tags : list<string> ) : s
 // The rating <select> options, with the item's current value marked
 // `selected`. Mirrors the upload form's option set; value 99 = unrated.
 fun rating-options( current : int ) : string
-  [(99, "(unrated)"),
-   (3,  "+3  ★★★  loved it"),
-   (2,  "+2  ★★   liked it a lot"),
-   (1,  "+1  ★    liked it"),
-   (0,  " 0       neutral"),
-   (-1, "-1  ☆   disliked it"),
-   (-2, "-2  ☆☆  disliked it a lot"),
-   (-3, "-3  ☆☆☆ hated it")
+  [(99, "unrated"),
+   (3,  "loved it"),
+   (2,  "liked it a lot"),
+   (1,  "liked it"),
+   (0,  "neutral"),
+   (-1, "disliked it"),
+   (-2, "disliked it a lot"),
+   (-3, "hated it")
   ].map(fn(o)
     val (v, label) = o
     val sel = if v == current then " selected" else ""

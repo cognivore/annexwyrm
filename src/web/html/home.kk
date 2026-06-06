@@ -65,15 +65,10 @@ fun row-rating( r : int ) : string
   if r == 99 || r < -3 || r > 3 then ""
   else
     val css = if r > 0 then "positive" elif r < 0 then "negative" else "neutral"
-    "<span class=\"rating " ++ css ++ "\" title=\"" ++ signed-pure(r) ++ " on a -3 to +3 scale\">" ++
-      stars3-pure(r) ++ " <span class=\"phrase\">" ++ phrase-pure(r) ++ "</span></span> "
+    "<span class=\"rating " ++ css ++ "\">" ++ phrase-pure(r) ++ "</span> "
 
-// Pure helpers duplicated from annex/item to avoid a dependency cycle —
+// Pure helper duplicated from annex/item to avoid a dependency cycle —
 // the html layer should not see the domain. Kept in sync by convention.
-fun stars3-pure( r : int ) : string
-  val m = if r < 0 then 0 - r else r
-  "★".repeat(m) ++ "☆".repeat(3 - m)
-
 fun phrase-pure( r : int ) : string
   if r == 3 then "loved it"
   elif r == 2 then "liked it a lot"
@@ -83,9 +78,6 @@ fun phrase-pure( r : int ) : string
   elif r == -2 then "disliked it a lot"
   elif r == -3 then "hated it"
   else ""
-
-fun signed-pure( r : int ) : string
-  if r > 0 then "+" ++ r.show else r.show
 
 fun esc-title( s : string ) : string
   if s == "" then "(untitled)" else esc(s)

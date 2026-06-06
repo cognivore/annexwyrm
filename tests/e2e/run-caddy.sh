@@ -721,11 +721,12 @@ assert_grep "$REVIEW_B_HTML" 'class="review-of"' "review-of preamble class"
 assert_grep "$REVIEW_B_HTML" 'review of' "review-of preamble text"
 assert_grep "$REVIEW_B_HTML" "<p class=\"review-of\">review of <a href=\"$PRIVATE_URL\">" \
     "review-of preamble links to \$PRIVATE_URL"
-# Rating badge.
+# Rating badge — words only, coloured by direction.
 assert_grep "$REVIEW_B_HTML" 'class="rating positive"' "rating positive class (+3)"
 assert_grep "$REVIEW_B_HTML" 'loved it' "rating +3 shown in words ('loved it')"
-# Stars: exactly three filled.
-assert_grep "$REVIEW_B_HTML" '★★★' "three filled stars"
+if printf '%s' "$REVIEW_B_HTML" | grep -qE '★|☆'; then
+    red "review B rating still renders stars"; exit 1; fi
+green "  ✓ review B rating is words only (no stars)"
 # Body hyperlink survives verbatim through multipart (--form-string gotcha).
 assert_grep "$REVIEW_B_HTML" '>privatePDF</a>' "body hyperlink anchor text"
 assert_grep "$REVIEW_B_HTML" "href=\"$PRIVATE_URL\"" "body hyperlink href == \$PRIVATE_URL"
@@ -736,11 +737,9 @@ assert_via_caddy "$REVIEW_A_HEADERS" "review A page"
 REVIEW_A_HTML="$(fetch_html_anon_tcp "$REVIEW_A_PATH")"
 assert_grep "$REVIEW_A_HTML" 'class="rating positive"' "review A rating positive class (+2)"
 assert_grep "$REVIEW_A_HTML" 'liked it a lot' "review A rating +2 shown in words"
-# Exactly two filled stars in the 3-slot bar: ★★ present, ★★★ absent.
-assert_grep "$REVIEW_A_HTML" '★★☆' "review A two filled + one hollow (out of 3)"
-if printf '%s' "$REVIEW_A_HTML" | grep -q '★★★'; then
-    red "review A shows three stars but rating is +2"; exit 1; fi
-green "  ✓ review A shows exactly two stars"
+if printf '%s' "$REVIEW_A_HTML" | grep -qE '★|☆'; then
+    red "review A rating still renders stars"; exit 1; fi
+green "  ✓ review A rating is words only (no stars)"
 assert_grep "$REVIEW_A_HTML" "href=\"$PUBLIC_URL\"" "review A preamble links to \$PUBLIC_URL"
 
 # ===========================================================================

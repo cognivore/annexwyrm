@@ -79,35 +79,45 @@ static int allow_private_egress(void) {
   return v && v[0] == '1';
 }
 
-static int cb_sockopt(void* clientp, curl_socket_t curlfd, curlsocktype purpose) {
-  (void)clientp; (void)curlfd; (void)purpose;
-  if (allow_private_egress()) return CURL_SOCKOPT_OK;
-  struct sockaddr_storage ss;
-  socklen_t slen = sizeof(ss);
-  if (getpeername((int)curlfd, (struct sockaddr*)&ss, &slen) != 0)
-    return CURL_SOCKOPT_ERROR;
-  if (ss.ss_family == AF_INET) {
-    struct sockaddr_in* s4 = (struct sockaddr_in*)&ss;
-    if (is_blocked_v4(ntohl(s4->sin_addr.s_addr))) return CURL_SOCKOPT_ERROR;
-  } else if (ss.ss_family == AF_INET6) {
-    struct sockaddr_in6* s6 = (struct sockaddr_in6*)&ss;
+/* True if curl is about to connect to a private/loopback/link-local addr. */
+static int addr_is_blocked(int family, const struct sockaddr* sa) {
+  if (family == AF_INET) {
+    const struct sockaddr_in* s4 = (const struct sockaddr_in*)sa;
+    return is_blocked_v4(ntohl(s4->sin_addr.s_addr));
+  } else if (family == AF_INET6) {
+    const struct sockaddr_in6* s6 = (const struct sockaddr_in6*)sa;
     const uint8_t* a = s6->sin6_addr.s6_addr;
-    /* ::1 loopback, :: unspecified */
     int all_zero_but_last = 1;
     for (int i = 0; i < 15; ++i) if (a[i]) { all_zero_but_last = 0; break; }
-    if (all_zero_but_last && (a[15] == 1 || a[15] == 0)) return CURL_SOCKOPT_ERROR;
-    if (a[0] == 0xfe && (a[1] & 0xc0) == 0x80) return CURL_SOCKOPT_ERROR; /* fe80::/10 link-local */
-    if ((a[0] & 0xfe) == 0xfc) return CURL_SOCKOPT_ERROR;                 /* fc00::/7 unique-local */
-    /* IPv4-mapped ::ffff:a.b.c.d */
-    if (a[10] == 0xff && a[11] == 0xff) {
+    if (all_zero_but_last && (a[15] == 1 || a[15] == 0)) return 1; /* ::1 / :: */
+    if (a[0] == 0xfe && (a[1] & 0xc0) == 0x80) return 1;           /* fe80::/10 */
+    if ((a[0] & 0xfe) == 0xfc) return 1;                            /* fc00::/7 */
+    if (a[10] == 0xff && a[11] == 0xff) {                           /* ::ffff:v4 */
       uint32_t v4 = ((uint32_t)a[12] << 24) | ((uint32_t)a[13] << 16) |
                     ((uint32_t)a[14] << 8) | a[15];
-      if (is_blocked_v4(v4)) return CURL_SOCKOPT_ERROR;
+      return is_blocked_v4(v4);
     }
-  } else {
-    return CURL_SOCKOPT_ERROR;  /* unknown family */
+    return 0;
   }
-  return CURL_SOCKOPT_OK;
+  return 1;  /* unknown family: refuse */
+}
+
+/* SSRF guard, done at the RIGHT hook: CURLOPT_OPENSOCKETFUNCTION is called
+ * with the address curl resolved and is about to connect to (so it also
+ * defeats DNS rebinding), and WE create the socket. The earlier attempt used
+ * CURLOPT_SOCKOPTFUNCTION + getpeername, which fires before connect() — the
+ * socket isn't connected yet, getpeername returns ENOTCONN, and EVERY egress
+ * was aborted (status 0). That silently broke all federation on prod (remote
+ * actor fetch failed → inbound Follows rejected as unsigned). The e2e masked
+ * it because ALLOW_PRIVATE_EGRESS short-circuits the check. */
+static curl_socket_t opensocket_cb(void* clientp, curlsocktype purpose,
+                                   struct curl_sockaddr* addr) {
+  (void)clientp;
+  if (purpose == CURLSOCKTYPE_IPCXN && !allow_private_egress() &&
+      addr_is_blocked(addr->family, &addr->addr)) {
+    return CURL_SOCKET_BAD;  /* refuse the connection */
+  }
+  return socket(addr->family, addr->socktype, addr->protocol);
 }
 
 static size_t cb_header(char* ptr, size_t size, size_t nmemb, void* userdata) {
@@ -167,7 +177,7 @@ kk_string_t kk_aw_curl(kk_string_t method, kk_string_t url,
     curl_easy_setopt(curl, CURLOPT_PROTOCOLS, (long)(CURLPROTO_HTTP | CURLPROTO_HTTPS));
     curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS, (long)(CURLPROTO_HTTP | CURLPROTO_HTTPS));
 #endif
-    curl_easy_setopt(curl, CURLOPT_SOCKOPTFUNCTION, cb_sockopt);
+    curl_easy_setopt(curl, CURLOPT_OPENSOCKETFUNCTION, opensocket_cb);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "annexwyrm/0.1.0");
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cb_write);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body_buf);
