@@ -32,6 +32,7 @@ import web/server
 import web/multipart
 import web/html/upload
 import web/handler/item
+import interp/str   // byte-count: a total C-backed primitive (see below)
 
 pub fun handle-upload-form( req : request ) : <db,config|e> response
   if !is-owner-session(req) then forbidden("login required")
@@ -73,7 +74,10 @@ fun ingest(
   val id = get-base-url() ++ "/items/" ++ slug
   val media = if f.media-type == "" then "application/octet-stream" else f.media-type
   val sha = b64-encode(sha256(f.body))
-  val byte-size = f.body.count
+  // byte-count, NOT .count: the file body is raw binary riding in a Koka
+  // string, so codepoint counting undercounts (UTF-8 continuation bytes
+  // are skipped). byte-count is the real on-disk size.
+  val byte-size = byte-count(f.body)
 
   // --- Mandatory archive put -------------------------------------------
   // Copy the blob to the encrypted archive remote and VERIFY it landed.

@@ -3,7 +3,14 @@
  *
  * `argv` is the 0x1F-separated argv (`argv0\037arg1\037…`). Stdin is
  * piped into the child; stdout and stderr are captured. Returns
- * `"<exit>\037<stdout>\037<stderr>"`.
+ * `"<exit>\037<stderr>\037<stdout>"`.
+ *
+ * STDOUT is the FINAL field because it is binary: `rclone cat` of an
+ * archived blob yields raw PDF/JPEG/audio bytes, which contain 0x1F —
+ * a mid-record stdout would truncate at the first one (silently
+ * corrupting publish-later copies). The exit code and stderr are text;
+ * stderr is copied with 0x1F stripped so it can never shift the frame.
+ * Do NOT add fields after STDOUT.
  */
 #include "aw_bridge.h"
 
@@ -75,7 +82,7 @@ kk_string_t kk_aw_spawn(kk_string_t argv_s, kk_string_t stdin_s,
     kk_string_drop(argv_s, ctx);
     kk_string_drop(stdin_s, ctx);
     free_argv(argv);
-    return aw_str_from_cstr("127\037""\037spawn: empty argv", ctx);
+    return aw_str_from_cstr("127\037spawn: empty argv\037", ctx);
   }
 
   int in_pipe[2], out_pipe[2], err_pipe[2];
@@ -83,7 +90,7 @@ kk_string_t kk_aw_spawn(kk_string_t argv_s, kk_string_t stdin_s,
     kk_string_drop(argv_s, ctx);
     kk_string_drop(stdin_s, ctx);
     free_argv(argv);
-    return aw_str_from_cstr("127\037""\037pipe failed", ctx);
+    return aw_str_from_cstr("127\037pipe failed\037", ctx);
   }
 
   pid_t pid = fork();
@@ -94,7 +101,7 @@ kk_string_t kk_aw_spawn(kk_string_t argv_s, kk_string_t stdin_s,
     kk_string_drop(argv_s, ctx);
     kk_string_drop(stdin_s, ctx);
     free_argv(argv);
-    return aw_str_from_cstr("127\037""\037fork failed", ctx);
+    return aw_str_from_cstr("127\037fork failed\037", ctx);
   }
 
   if (pid == 0) {
@@ -157,16 +164,20 @@ kk_string_t kk_aw_spawn(kk_string_t argv_s, kk_string_t stdin_s,
   char code_str[16];
   int cl = snprintf(code_str, sizeof(code_str), "%d", exit_code);
 
-  size_t total = (size_t)cl + 1 + so.len + 1 + se.len;
+  /* EXIT \x1F STDERR \x1F STDOUT — stdout last because it is binary (see
+   * the file header). stderr is diagnostics text; strip any 0x1F so it
+   * can never shift the frame. */
+  size_t total = (size_t)cl + 1 + se.len + 1 + so.len;
   char* result = (char*)malloc(total + 1);
   kk_string_t out_s;
   if (result) {
     memcpy(result, code_str, (size_t)cl);
     size_t pos = (size_t)cl;
     result[pos++] = 0x1F;
-    memcpy(result + pos, so.data, so.len); pos += so.len;
+    for (size_t k = 0; k < se.len; ++k)
+      if (se.data[k] != 0x1F) result[pos++] = se.data[k];
     result[pos++] = 0x1F;
-    memcpy(result + pos, se.data, se.len); pos += se.len;
+    memcpy(result + pos, so.data, so.len); pos += so.len;
     out_s = aw_str_from_bytes((uint8_t*)result, pos, ctx);
     free(result);
   } else {

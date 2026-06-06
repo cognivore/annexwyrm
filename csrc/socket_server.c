@@ -13,8 +13,15 @@
  *   kk_aw_close(fd)                  -> ()
  *
  * Request encoding (records separated by 0x1F):
- *   METHOD PATH QUERY HEADERS BODY REMOTE
+ *   METHOD PATH QUERY REMOTE HEADERS BODY
  * HEADERS is `name: value\n…`.
+ *
+ * The BODY is the FINAL field because it is binary: real upload payloads
+ * (PDF/JPEG/audio) contain 0x1F bytes, so the body must sit after the
+ * last separator, decoded on the Koka side with split-limit (take five
+ * fields, keep the remainder verbatim). The five leading fields are
+ * copied with 0x1F stripped so a hostile local peer cannot shift the
+ * frame. Do NOT add fields after BODY.
  */
 #include "aw_bridge.h"
 
@@ -28,7 +35,12 @@
 #include <stdio.h>
 #include <poll.h>
 
-#define MAX_REQ_BYTES (16 * 1024 * 1024)   /* 16 MiB cap; mirrors Caddy's cap. */
+/* 64 MiB request cap. The proxy in front (Caddy/nginx) enforces its own
+ * limit; this is the daemon's in-memory backstop. Voice notes and most
+ * PDFs/EPUBs fit; full podcast episodes may not — raising this further
+ * means revisiting the buffer-the-whole-body design (the box has 15 GiB,
+ * but the body is copied a handful of times on its way through). */
+#define MAX_REQ_BYTES (64 * 1024 * 1024)
 
 kk_integer_t kk_aw_listen(kk_string_t path, kk_context_t* ctx) {
   /* Ignore SIGPIPE so a peer closing mid-write (`nc -z` probe,
@@ -219,9 +231,20 @@ static int find_header(const char* hdrs, size_t hlen,
   return 0;
 }
 
+/* Copy `n` bytes of src into dst at pos, SKIPPING 0x1F bytes: the leading
+ * record fields must never contain the separator or the frame shifts and
+ * the body bleeds into the wrong field. (The body itself is appended last,
+ * raw, and may contain anything.) Returns the new pos. */
+static size_t copy_no_us(char* dst, size_t pos, const char* src, size_t n) {
+  for (size_t i = 0; i < n; ++i)
+    if (src[i] != 0x1F) dst[pos++] = src[i];
+  return pos;
+}
+
 /* Encode the parsed request into one Koka string.
- * Layout:  METHOD \x1F PATH \x1F QUERY \x1F HEADERS \x1F BODY \x1F REMOTE
- * HEADERS is `name: value\n` per line.
+ * Layout:  METHOD \x1F PATH \x1F QUERY \x1F REMOTE \x1F HEADERS \x1F BODY
+ * HEADERS is `name: value\n` per line. BODY is last — it is binary; see
+ * the file header.
  */
 kk_string_t kk_aw_read_request(kk_integer_t conn_i, kk_context_t* ctx) {
   int conn = (int)kk_integer_clamp32(conn_i, ctx);
@@ -277,30 +300,33 @@ kk_string_t kk_aw_read_request(kk_integer_t conn_i, kk_context_t* ctx) {
     }
   }
 
-  /* Build encoded record. */
+  /* Build encoded record: METHOD PATH QUERY REMOTE HEADERS then the raw
+   * BODY last (copy_no_us only ever shrinks, so `total` is an upper
+   * bound). Remote is left empty — the proxy puts X-Forwarded-For in the
+   * headers anyway. */
   size_t total = (m_end - m_start) + 1
                + (p_end - p_start) + 1
                + (q_end - q_start) + 1
+               + 0 /* remote */    + 1
                + (h_end - h_start) + 1
-               + body_len + 1
-               + 0 /* remote */;
+               + body_len;
   char* out = (char*)malloc(total + 1);
   if (!out) { free(buf); return aw_str_empty(ctx); }
   size_t pos = 0;
-  memcpy(out + pos, buf + m_start, m_end - m_start); pos += (m_end - m_start);
+  pos = copy_no_us(out, pos, buf + m_start, m_end - m_start);
   out[pos++] = 0x1F;
-  memcpy(out + pos, buf + p_start, p_end - p_start); pos += (p_end - p_start);
+  pos = copy_no_us(out, pos, buf + p_start, p_end - p_start);
   out[pos++] = 0x1F;
-  memcpy(out + pos, buf + q_start, q_end - q_start); pos += (q_end - q_start);
+  pos = copy_no_us(out, pos, buf + q_start, q_end - q_start);
   out[pos++] = 0x1F;
-  memcpy(out + pos, buf + h_start, h_end - h_start); pos += (h_end - h_start);
+  /* remote: empty */
+  out[pos++] = 0x1F;
+  pos = copy_no_us(out, pos, buf + h_start, h_end - h_start);
   out[pos++] = 0x1F;
   if (body_len) {
     memcpy(out + pos, buf + body_offset, body_len);
     pos += body_len;
   }
-  out[pos++] = 0x1F;
-  /* remote left empty (Caddy puts X-Forwarded-For in headers anyway) */
 
   kk_string_t result = aw_str_from_bytes((uint8_t*)out, pos, ctx);
   free(out);

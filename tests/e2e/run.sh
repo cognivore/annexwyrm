@@ -556,6 +556,110 @@ assert_status "$MIG_SOCK" "$MIG_PATH" 200
 kill "$FAIL_PID" 2>/dev/null || true; wait "$FAIL_PID" 2>/dev/null || true
 FAIL_PID=""
 
+# ===========================================================================
+#  Step G — BINARY round-trip. The first real browser upload (a phone file)
+#  failed with "expected multipart/form-data": the C bridge framed the
+#  request as METHOD\x1F…\x1FBODY\x1FREMOTE and socket_serve's split("\x1f")
+#  silently TRUNCATED the body at its first 0x1F byte (≈1 per 256 bytes of
+#  any real JPEG/PDF/audio). Every earlier fixture was ASCII, so 319
+#  assertions never noticed. These fixtures contain every byte value
+#  0x00–0xFF (0x1F and NUL included) plus multipart boundary-bait, and we
+#  assert byte-EXACT round-trips and the exact byte_size/sha256 (codepoint
+#  .count on UTF-8-lied bytes undercounts; sha256 catches any mangling).
+# ===========================================================================
+note "=== Step G — binary upload round-trip (0x1F / NUL / high bytes) ==="
+
+BIN_ONE="$TMP/binary-one.bin"
+BIN_TWO="$TMP/binary-two.bin"
+python3 - "$BIN_ONE" "$BIN_TWO" <<'PYEOF'
+import sys
+# Deterministic binary: all 256 byte values, multipart boundary-bait
+# (\r\n--, a fake WebKitFormBoundary line), and a keyed byte stretch.
+every = bytes(range(256))
+bait  = b"\r\n------WebKitFormBoundaryBAIT--\r\n--\x1f\x00\xff"
+def blob(key):
+    body = every * 8 + bait + bytes((i * 31 + key) % 256 for i in range(4096))
+    return body + bait + every
+open(sys.argv[1], "wb").write(blob(7))
+open(sys.argv[2], "wb").write(blob(131))
+PYEOF
+BIN_ONE_SIZE=$(wc -c < "$BIN_ONE" | tr -d ' ')
+BIN_TWO_SIZE=$(wc -c < "$BIN_TWO" | tr -d ' ')
+b64sha() {
+    python3 -c "import hashlib,base64,sys; print(base64.b64encode(hashlib.sha256(open(sys.argv[1],'rb').read()).digest()).decode())" "$1"
+}
+BIN_ONE_SHA=$(b64sha "$BIN_ONE")
+BIN_TWO_SHA=$(b64sha "$BIN_TWO")
+note "binary fixtures: $BIN_ONE_SIZE and $BIN_TWO_SIZE bytes"
+
+# (a) archived binary upload — the exact prod failure shape.
+GBIN_PATH=$(upload "$SOCK" "$JAR" "$BIN_ONE" \
+    "Binary Archived" "" "<p>binary blob, archived only.</p>" "99" "")
+GBIN_URL="http://localhost$GBIN_PATH"
+GBIN_SLUG="${GBIN_PATH##*/}"
+green "  binary archived item: $GBIN_PATH (slug $GBIN_SLUG)"
+assert_status "$SOCK" "$GBIN_PATH" 200
+assert_sql "$DB" "SELECT byte_size FROM item WHERE id='$GBIN_URL';" \
+    "$BIN_ONE_SIZE" "byte_size is the BYTE count ($BIN_ONE_SIZE), not codepoints"
+assert_sql "$DB" "SELECT sha256 FROM item WHERE id='$GBIN_URL';" \
+    "$BIN_ONE_SHA" "stored sha256 == sha256 of the original bytes"
+assert_log_grep "$LOG" \
+    "^\[info\] upload/done id=$GBIN_URL size=$BIN_ONE_SIZE file_published=0\$" \
+    "binary archived upload/done with exact byte size"
+
+# (b) published-on-upload binary.
+GPUB_PATH=$(upload "$SOCK" "$JAR" "$BIN_TWO" \
+    "Binary Published" "" "<p>binary blob, published.</p>" "99" "" "1")
+GPUB_URL="http://localhost$GPUB_PATH"
+GPUB_SLUG="${GPUB_PATH##*/}"
+green "  binary published item: $GPUB_PATH (slug $GPUB_SLUG)"
+assert_sql "$DB" "SELECT byte_size FROM item WHERE id='$GPUB_URL';" \
+    "$BIN_TWO_SIZE" "published binary byte_size exact"
+assert_sql "$DB" "SELECT sha256 FROM item WHERE id='$GPUB_URL';" \
+    "$BIN_TWO_SHA" "published binary sha256 exact"
+assert_sql "$DB" "SELECT file_published FROM item WHERE id='$GPUB_URL';" \
+    "1" "published binary file_published=1"
+
+# (c) byte-exact blobs on the local backends (gated exactly like Step A).
+if [ "$USE_GDRIVE" = "1" ]; then
+    note "  (gdrive) blob byte-compare gated off; sha256 asserts above cover it"
+else
+    cmp -s "$ARCHIVE_REMOTE/$GBIN_SLUG" "$BIN_ONE" \
+        && green "  ✓ archived binary blob byte-identical" \
+        || { red "archived binary blob differs from the source"; exit 1; }
+    [ ! -e "$PUBLIC_REMOTE/$GBIN_SLUG" ] \
+        && green "  ✓ archived binary NOT in the public remote" \
+        || { red "archived binary leaked to the public remote"; exit 1; }
+    cmp -s "$ARCHIVE_REMOTE/$GPUB_SLUG" "$BIN_TWO" \
+        && green "  ✓ published binary archive copy byte-identical" \
+        || { red "published binary archive copy differs"; exit 1; }
+    cmp -s "$PUBLIC_REMOTE/$GPUB_SLUG" "$BIN_TWO" \
+        && green "  ✓ published binary public copy byte-identical" \
+        || { red "published binary public copy differs"; exit 1; }
+fi
+
+# ===========================================================================
+#  Step H — BINARY publish-later. Exercises the OTHER \x1f channel: the
+#  spawn result was EXIT\x1fSTDOUT\x1fSTDERR, so blob-get (rclone cat) of a
+#  binary blob truncated stdout at its first 0x1F byte and the publish-later
+#  copy silently corrupted. Publish Step G's archived binary and assert the
+#  public copy is byte-identical to the original.
+# ===========================================================================
+note "=== Step H — binary publish-later (blob-get path) ==="
+H_RESULT=$(post_action "$SOCK" "$JAR" "$GBIN_PATH/publish-file")
+H_STATUS="${H_RESULT%%$'\t'*}"
+[ "$H_STATUS" = "303" ] || { red "binary publish-file: expected 303, got $H_STATUS"; exit 1; }
+green "  ✓ binary publish-file → 303"
+assert_sql "$DB" "SELECT file_published FROM item WHERE id='$GBIN_URL';" \
+    "1" "binary item file_published=1 after publish-later"
+if [ "$USE_GDRIVE" = "1" ]; then
+    note "  (gdrive) public byte-compare gated off"
+else
+    cmp -s "$PUBLIC_REMOTE/$GBIN_SLUG" "$BIN_ONE" \
+        && green "  ✓ publish-later public copy byte-identical (blob-get survived 0x1F)" \
+        || { red "publish-later public copy differs — blob-get mangled the bytes"; exit 1; }
+fi
+
 green ""
 green "=========================================="
 green "  e2e (socket) passed.  data dir: $DATA"

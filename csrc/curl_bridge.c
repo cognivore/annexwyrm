@@ -121,7 +121,11 @@ kk_string_t kk_aw_curl(kk_string_t method, kk_string_t url,
     memcpy(out, status_str, (size_t)sl);
     size_t pos = (size_t)sl;
     out[pos++] = 0x1F;
-    if (hdr_buf.len) { memcpy(out + pos, hdr_buf.data, hdr_buf.len); pos += hdr_buf.len; }
+    /* Response headers come from an UNTRUSTED remote: strip 0x1F so a
+     * hostile peer can never shift the frame. The body is last and raw —
+     * the Koka side decodes with split-limit, so it may contain 0x1F. */
+    for (size_t k = 0; k < hdr_buf.len; ++k)
+      if (hdr_buf.data[k] != 0x1F) out[pos++] = hdr_buf.data[k];
     out[pos++] = 0x1F;
     if (body_buf.len) { memcpy(out + pos, body_buf.data, body_buf.len); pos += body_buf.len; }
     result = aw_str_from_bytes((uint8_t*)out, pos, ctx);

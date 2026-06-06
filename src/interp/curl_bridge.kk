@@ -8,6 +8,7 @@ module interp/curl_bridge
 import effects/fetch
 import effects/deliver
 import effects/http
+import interp/str
 
 extern import
   c file "../../csrc/curl_bridge.c"
@@ -22,9 +23,12 @@ extern kk-curl( method : string, url : string, headers : string, body : string )
 fun encode-headers( hs : list<(string,string)> ) : string
   hs.map(fn(h) h.fst ++ ": " ++ h.snd).join("\n")
 
+// The body is the FINAL field and is decoded with split-limit so a 0x1F
+// byte inside a fetched body can never truncate it (the same framing
+// rule as the request and spawn records; see interp/str).
 fun parse-response( s : string ) : http-response
-  match s.split("\x1f")
-    Cons(stat, Cons(hdrs, Cons(body, _))) ->
+  match s.split-limit("\x1f", 2)
+    Just((Cons(stat, Cons(hdrs, Nil)), body)) ->
       Http-response(
         stat.parse-int.default(0),
         parse-headers(hdrs),

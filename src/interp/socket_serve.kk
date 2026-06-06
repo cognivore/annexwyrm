@@ -39,10 +39,17 @@ extern kk-aw-close( fd : int ) : <ndet,net> ()
 //  Request parsing  (encoded record produced by socket_server.c)
 // ----------------------------------------------------------------------
 
-// The C bridge emits: METHOD \x1F PATH \x1F QUERY \x1F HEADERS \x1F BODY \x1F REMOTE
+// The C bridge emits: METHOD \x1F PATH \x1F QUERY \x1F REMOTE \x1F HEADERS \x1F BODY
+//
+// The BODY is the FINAL field because it is binary: any real PDF/JPEG/
+// audio contains 0x1F bytes, so a plain split("\x1f") silently truncated
+// the body at its first 0x1F — which is exactly how the first real phone
+// upload broke ("expected multipart/form-data" on a perfectly good form).
+// split-limit peels the five separator-free fields and keeps the
+// remainder byte-exact.
 pub fun parse-incoming( encoded : string ) : maybe<request>
-  match encoded.split("\x1f")
-    Cons(method, Cons(path, Cons(query, Cons(hdrs, Cons(body, Cons(remote, _)))))) ->
+  match encoded.split-limit("\x1f", 5)
+    Just((Cons(method, Cons(path, Cons(query, Cons(remote, Cons(hdrs, Nil))))), body)) ->
       Just(Request(method, path, query, parse-headers(hdrs), body, remote))
     _ -> Nothing
 
