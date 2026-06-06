@@ -23,7 +23,12 @@ import annex/item
 // (`file-published=False`) carry an EMPTY url[] — nothing about the blob
 // leaks — and published items carry the download URL (uc?export=download)
 // first and the viewer mirror (open?id) second.
-pub fun item-to-ap-object( i : annex-item, followers-url : url ) : ap-object
+// `tags` are the item's hashtags (normalised, no '#'); they live in a side
+// table, so the caller loads them and threads them in (the annex-item value
+// struct stays untouched — no extra positional field to churn through every
+// constructor / koka#654 site). Default [] keeps existing call sites that
+// don't care about tags compiling unchanged.
+pub fun item-to-ap-object( i : annex-item, followers-url : url, tags : list<string> = [] ) : ap-object
   val (to, cc) = build-addressing(ItPublic, followers-url, [])
   Ap-object(
     id            = i.id,
@@ -41,7 +46,8 @@ pub fun item-to-ap-object( i : annex-item, followers-url : url ) : ap-object
     cc            = cc,
     sensitive     = i.summary != "",
     attachment    = [],
-    rating        = i.rating
+    rating        = i.rating,
+    tags          = tags
   )
 
 // The AP `url[]` payload for an item, derived purely from its

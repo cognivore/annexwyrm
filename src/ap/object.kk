@@ -9,6 +9,7 @@ module ap/object
 
 import core/types
 import core/json
+import core/url
 
 // A Link (RFC 5988 / AS2). One mirror entry in `url`.
 pub value struct ap-link
@@ -57,6 +58,7 @@ pub value struct ap-object
   sensitive     : bool
   attachment    : list<ap-link>  // optional thumbnails / extras
   rating        : int            // -3..3 or 99 = unrated; serialised as `annexwyrm:rating`
+  tags          : list<string>   // hashtags (normalised, no '#'); serialised as AP `tag` Hashtags
 
 // Default-ish builder used by tests and the publish flow.
 pub fun ap-object/empty( id : url, kind : object-kind, owner : url, published : iso-time ) : ap-object
@@ -76,7 +78,8 @@ pub fun ap-object/empty( id : url, kind : object-kind, owner : url, published : 
     cc            = [],
     sensitive     = False,
     attachment    = [],
-    rating        = 99
+    rating        = 99,
+    tags          = []
   )
 
 // ----------------------------------------------------------------------
@@ -114,8 +117,30 @@ pub fun ap-object/to-json( o : ap-object, embed-context : bool = True ) : json
     ("cc",                  urls-or-null(o.cc)),
     ("sensitive",           bool/json(o.sensitive)),
     ("attachment",          attachments-or-null(o.attachment)),
+    ("tag",                 tags-json(origin-of(o.id), o.tags)),
     ("annexwyrm:rating",    rating-json(o.rating))
   ])
+
+// AP `tag` array of Hashtag objects (Mastodon-compatible). `href` points at
+// our own /tags/<tag> collection so a remote reader can browse it. Empty ⇒
+// the field is dropped (obj-opt skips JNull).
+fun tags-json( origin : url, tags : list<string> ) : json
+  match tags
+    Nil -> JNull
+    _   -> arr(tags.map(fn(t) hashtag-json(origin, t)))
+
+fun hashtag-json( origin : url, t : string ) : json
+  obj([
+    ("type", string/json("Hashtag")),
+    ("href", string/json(origin ++ "/tags/" ++ t)),
+    ("name", string/json("#" ++ t))
+  ])
+
+// scheme://authority of a URL, or "" if unparseable.
+fun origin-of( u : url ) : url
+  match url-parse(u)
+    Just(p) -> p.scheme ++ "://" ++ p.authority
+    Nothing -> ""
 
 // `annexwyrm:rating` is namespaced; we declare the prefix in the context.
 // Other servers will ignore it; ours surface it as the 7-point score.
@@ -176,8 +201,32 @@ pub fun ap-object/from-json( j : json ) : div maybe<ap-object>
     cc            = j.get-string-list("cc"),
     sensitive     = j.get("sensitive").map(json/bool).flatten-maybe.default(False),
     attachment    = extract-urls(j.get("attachment")),
-    rating        = j.get("annexwyrm:rating").map(json/int).flatten-maybe.default(99)
+    rating        = j.get("annexwyrm:rating").map(json/int).flatten-maybe.default(99),
+    tags          = extract-tags(j.get("tag"))
   ))
+
+// Pull the Hashtag names (normalised, no '#') out of an AP `tag` value,
+// which may be a string, a Hashtag/Mention object, or an array of those.
+// Non-Hashtag tag entries (e.g. Mention) are ignored.
+fun extract-tags( j : maybe<json> ) : div list<string>
+  match j
+    Nothing  -> []
+    Just(jv) -> extract-tags-one(jv)
+
+fun extract-tags-one( j : json ) : div list<string>
+  match j
+    JArray(xs) -> xs.flatmap(extract-tags-one)
+    JString(s) -> single-tag(norm-tag-str(s))
+    JObject(_) -> if j.get-string("type") == "Hashtag"
+                    then single-tag(norm-tag-str(j.get-string("name")))
+                    else []
+    _ -> []
+
+fun single-tag( t : string ) : list<string>
+  if t == "" then [] else [t]
+
+fun norm-tag-str( s : string ) : string
+  s.trim.list.drop-while(fn(c) c == '#').string.to-lower
 
 // `url` is one of: a string, a Link object, an array of strings, an
 // array of Links, or a mixed array. We normalise to a list of Links.

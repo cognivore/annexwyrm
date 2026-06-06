@@ -84,6 +84,17 @@ CREATE TABLE IF NOT EXISTS item (
 CREATE INDEX IF NOT EXISTS item_owner_published ON item(owner_id, published_at DESC);
 CREATE INDEX IF NOT EXISTS item_in_reply_to ON item(in_reply_to);
 
+-- Tags / hashtags for an item. Normalised: lowercase, no leading '#'. One
+-- row per (item, tag); they federate as AP `Hashtag` entries in the object's
+-- `tag` array and back the /tags/<tag> listing and search. Created with
+-- IF NOT EXISTS so `init` adds it to carried-over DBs with no migration code.
+CREATE TABLE IF NOT EXISTS item_tag (
+    item_id         TEXT NOT NULL REFERENCES item(id) ON DELETE CASCADE,
+    tag             TEXT NOT NULL,              -- lowercase, no '#'
+    PRIMARY KEY (item_id, tag)
+);
+CREATE INDEX IF NOT EXISTS item_tag_tag ON item_tag(tag);
+
 -- Migration for DBs created under the old (privacy) schema. The C bridge
 -- (csrc/db_bridge.c, kk_aw_db_init_schema) probes PRAGMA table_info(item)
 -- and runs these idempotently — DROP COLUMN-free (portable across the

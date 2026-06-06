@@ -28,6 +28,7 @@ import effects/store
 import effects/crypto
 import annex/item
 import ap/outbox
+import ap/persist
 import web/server
 import web/multipart
 import web/html/upload
@@ -57,7 +58,8 @@ pub fun handle-upload-post( req : request )
             val in-reply-to = parts.field("in_reply_to").default("")
             // The publish-file checkbox: present (any value) ⇒ publish now.
             val publish-now = parts.field("publish_file").is-just
-            ingest(f, name, summary, content, rating, in-reply-to, publish-now)
+            val tags = parse-tags(parts.field("tags").default(""))
+            ingest(f, name, summary, content, rating, in-reply-to, publish-now, tags)
 
 fun ingest(
     f : mpart,
@@ -66,7 +68,8 @@ fun ingest(
     content : string,
     rating : int,
     in-reply-to : string,
-    publish-now : bool
+    publish-now : bool,
+    tags : list<string>
   ) : <db,time,rng,log,config,store,crypto,div|e> response
   val now = now-iso()
   val owner = get-base-url() ++ "/users/" ++ get-local-username()
@@ -108,6 +111,9 @@ fun ingest(
       [archive-remote]
     )
     save-item(it1)
+    // Tags must be persisted BEFORE emit-create — emit-create reads them
+    // back (load-item-tags) to build the federated `tag` Hashtag array.
+    save-item-tags(id, tags)
     // The review federates immediately, archived file and all.
     emit-create(it1)
 

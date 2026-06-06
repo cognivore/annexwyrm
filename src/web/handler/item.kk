@@ -13,6 +13,7 @@ import effects/config
 import effects/store
 import ap/object
 import ap/outbox
+import ap/persist
 import annex/item
 import annex/publish
 import web/server
@@ -29,15 +30,16 @@ pub fun handle-item( req : request, id : string )
   match load-item(full-id)
     Nothing -> not-found("no such item")
     Just(it) ->
+      val tags = load-item-tags(full-id)
       if prefers-jsonld(req) then
         val followers = it.owner ++ "/followers"
-        val obj = item-to-ap-object(it, followers)
+        val obj = item-to-ap-object(it, followers, tags)
         ok-jsonld(json/show(ap-object/to-json(obj)))
       else
         val likes = count-likes(full-id)
         val shares = count-shares(full-id)
         val owner = is-owner-session(req)
-        ok-html(render-item-page(it, likes, shares, owner))
+        ok-html(render-item-page(it, likes, shares, owner, tags))
 
 // POST /items/<id>/publish-file — open the archived file to the public.
 // Owner-gated, idempotent, and one-way for v1: it copies the blob to the
@@ -79,7 +81,7 @@ pub fun handle-item-edit-form( req : request, id : string )
     val full-id = get-base-url() ++ "/items/" ++ id
     match load-item(full-id)
       Nothing -> not-found("no such item")
-      Just(it) -> ok-html(render-edit-form(it, id))
+      Just(it) -> ok-html(render-edit-form(it, id, load-item-tags(full-id)))
 
 // POST /items/<id>/edit — apply a metadata edit and federate an Update.
 // Owner-gated. Body is application/x-www-form-urlencoded (no file part).
@@ -103,18 +105,27 @@ pub fun handle-item-edit-post( req : request, id : string )
           form-lookup(form, "rating").default(it.rating.show).parse-int.default(it.rating))
         val in-reply-to = form-lookup(form, "in_reply_to").default(it.in-reply-to)
         val now = now-iso()
+        // Tags: present (even empty) ⇒ replace with the parsed set; absent ⇒
+        // keep the current set. (load-item-tags here reads them BEFORE
+        // save-item's REPLACE; ship-edited-item then writes the final set
+        // AFTER save-item, then federates it.)
+        val new-tags = match form-lookup(form, "tags")
+          Just(tval) -> parse-tags(tval)
+          Nothing    -> load-item-tags(full-id)
         ship-edited-item(
-          edit-item-fields(it, name, summary, content, rating, in-reply-to, now))
+          edit-item-fields(it, name, summary, content, rating, in-reply-to, now),
+          new-tags)
         info("item/edited", [("id", full-id), ("rating", rating.show)])
         see-other("/items/" ++ id)
 
 // Effectful tail for an edit: persist the already-built item and federate
 // the Update. The item is a PARAMETER (not a local capture) and this
 // returns () — the koka#654-safe shape shared with ship-published-item.
-fun ship-edited-item( it : annex-item )
+fun ship-edited-item( it : annex-item, tags : list<string> )
   : <db,time,rng,log,config,div|e> ()
-  save-item(it)
-  emit-update(it)
+  save-item(it)                 // self-preserves the OLD tags…
+  save-item-tags(it.id, tags)   // …which we then override with the edit's set
+  emit-update(it)               // emit-update reads item_tag → federates `tags`
 
 // Look up a form field, distinguishing "absent" (Nothing → keep current)
 // from "present but empty" (Just "" → intentional clear).
@@ -244,6 +255,13 @@ fun load-remotes( item-id : url ) : db list<item-remote>
   ))
 
 pub fun save-item( i : annex-item ) : db ()
+  // INSERT OR REPLACE deletes any existing row first, which fires ON DELETE
+  // CASCADE on item_tag (and item_remote). Remotes are re-written from the
+  // value struct below; tags live in a side table the struct doesn't carry,
+  // so capture and restore them here. Callers that intend to CHANGE tags
+  // call save-item-tags AFTER this (e.g. the edit path). Without this,
+  // every re-save (edit, publish-file) would silently wipe the item's tags.
+  val keep-tags = load-item-tags(i.id)
   val _ = exec(
     "INSERT OR REPLACE INTO item " ++
     "(id, owner_id, object_type, name, summary, content, " ++
@@ -261,6 +279,7 @@ pub fun save-item( i : annex-item ) : db ()
   )
   val _ = exec("DELETE FROM item_remote WHERE item_id = ?", [txt(i.id)])
   i.remotes.foreach(fn(r) save-remote(i, r))
+  save-item-tags(i.id, keep-tags)
 
 fun save-remote( i : annex-item, r : item-remote ) : db ()
   val _ = exec(

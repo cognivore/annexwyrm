@@ -40,6 +40,7 @@ pub fun render-upload-form() : string
     "      </select>",
     "    </label>",
     "    <label>review of (full item URL): <input type=\"url\" name=\"in_reply_to\" placeholder=\"https://server/items/abc123\"></label>",
+    "    <label>tags (space- or comma-separated, # optional): <input type=\"text\" name=\"tags\" placeholder=\"mtg kamigawa game-design\"></label>",
     "  </fieldset>",
     "  <button type=\"submit\">save</button>",
     "</form>"

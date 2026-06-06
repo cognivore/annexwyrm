@@ -76,22 +76,26 @@ fun queue-each( aid : url, inboxes : list<url> ) : <db,time,config,div|e> ()
 pub fun emit-create( item : annex-item )
   : <db,time,rng,log,config,div|e> ()
   val aid = mint-id("activities")
-  ship-activity(build-create-activity(aid, item))
+  val tags = load-item-tags(item.id)
+  ship-activity(build-create-activity(aid, item, tags))
 
 pub fun emit-update( item : annex-item )
   : <db,time,rng,log,config,div|e> ()
   val aid = mint-id("activities")
-  ship-activity(build-update-activity(aid, item))
+  val tags = load-item-tags(item.id)
+  ship-activity(build-update-activity(aid, item, tags))
 
 // Pure activity construction kept out of the effectful body. Returning
 // a value struct from a pure function avoids the mlift-capture trigger.
-fun build-create-activity( aid : url, item : annex-item ) : config ap-activity
+// `tags` (loaded above, from the item_tag side table) federate as the AP
+// object's `tag` Hashtag array.
+fun build-create-activity( aid : url, item : annex-item, tags : list<string> ) : config ap-activity
   val followers = local-actor-url() ++ "/followers"
-  create-of(aid, item.owner, item-to-ap-object(item, followers))
+  create-of(aid, item.owner, item-to-ap-object(item, followers, tags))
 
-fun build-update-activity( aid : url, item : annex-item ) : config ap-activity
+fun build-update-activity( aid : url, item : annex-item, tags : list<string> ) : config ap-activity
   val followers = local-actor-url() ++ "/followers"
-  update-of(aid, item.owner, item-to-ap-object(item, followers))
+  update-of(aid, item.owner, item-to-ap-object(item, followers, tags))
 
 // Persist + queue-out an already-built activity. The activity is a
 // parameter (not a local capture); returning `()` avoids the value

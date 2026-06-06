@@ -967,6 +967,89 @@ assert_grep "$M_HTML" "★★★" "rating +3 fills all three slots"
 M_HOME=$(fetch_html_anon "$SOCK" "/")
 assert_grep "$M_HOME" "loved it" "home list shows the rating in words"
 
+# ===========================================================================
+#  Step N — TAGS + SEARCH. Upload with tags; assert normalisation, the item
+#  page chips, AP Hashtag federation, the /tags/<tag> + /tags index + /search
+#  listings, and that an edit replaces the tag set.
+# ===========================================================================
+note "=== Step N — tags + search ==="
+TAG_PATH=$(upload "$SOCK" "$JAR" "$PDF_ONE" \
+    "Tagged Review" "" "<p>about kamigawa limited</p>" "2" "" "" "MTG, #Kamigawa limited")
+TAG_URL="http://localhost$TAG_PATH"
+TAG_SLUG="${TAG_PATH##*/}"
+green "  tagged item: $TAG_PATH"
+
+# (a) tags stored NORMALISED (lowercase, no '#') and de-duped.
+assert_sql "$DB" \
+    "SELECT group_concat(tag, ',') FROM (SELECT tag FROM item_tag WHERE item_id='$TAG_URL' ORDER BY tag);" \
+    "kamigawa,limited,mtg" "tags stored normalised (lowercased, no '#'), sorted"
+
+# (b) the item page shows clickable tag chips.
+TAG_HTML=$(fetch_html_anon "$SOCK" "$TAG_PATH")
+assert_grep "$TAG_HTML" 'href="/tags/kamigawa"' "item page renders the #kamigawa chip"
+assert_grep "$TAG_HTML" 'href="/tags/mtg"'      "item page renders the #mtg chip"
+
+# (c) tags federate as AP Hashtag entries in the object's tag[] and in the
+#     stored Create activity.
+TAG_AP=$(fetch_ap_anon "$SOCK" "$TAG_PATH")
+assert_grep "$TAG_AP" '"type":"Hashtag"' "AP object federates Hashtag tags"
+assert_grep "$TAG_AP" '"name":"#kamigawa"' "AP Hashtag name is #kamigawa"
+assert_sql "$DB" "SELECT (raw LIKE '%Hashtag%') FROM activity WHERE type='Create' AND object_id='$TAG_URL';" \
+    "1" "the federated Create carries the Hashtag tag"
+
+# (d) /tags/<tag> lists the item; the segment is normalised (/tags/MTG → mtg).
+assert_grep "$(fetch_html_anon "$SOCK" "/tags/kamigawa")" "Tagged Review" \
+    "/tags/kamigawa lists the item"
+assert_grep "$(fetch_html_anon "$SOCK" "/tags/MTG")" "Tagged Review" \
+    "/tags/MTG normalises to mtg and lists the item"
+
+# (e) search matches by title, by tag/content, and reports no-match cleanly.
+assert_grep "$(fetch_html_anon "$SOCK" "/search?q=Tagged")" "Tagged Review" \
+    "search matches the title"
+assert_grep "$(fetch_html_anon "$SOCK" "/search?q=kamigawa")" "Tagged Review" \
+    "search matches a tag / the content"
+assert_grep "$(fetch_html_anon "$SOCK" "/search?q=zzpdqnonexistent")" "no matches" \
+    "search with no results shows the empty message"
+
+# (f) the /tags index lists the tag.
+assert_grep "$(fetch_html_anon "$SOCK" "/tags")" 'href="/tags/kamigawa"' \
+    "the /tags index lists kamigawa"
+
+# (g) editing replaces the whole tag set.
+edit_item "$SOCK" "$JAR" "$TAG_SLUG" \
+    "Tagged Review" "" "<p>now about something else</p>" "2" "" "draft solo" >/dev/null
+assert_sql "$DB" \
+    "SELECT group_concat(tag, ',') FROM (SELECT tag FROM item_tag WHERE item_id='$TAG_URL' ORDER BY tag);" \
+    "draft,solo" "edit replaces the tag set"
+if printf '%s' "$(fetch_html_anon "$SOCK" "/tags/kamigawa")" | grep -q "Tagged Review"; then
+    red "after the edit, the removed #kamigawa tag still lists the item"
+    exit 1
+fi
+green "  ✓ an edited-away tag no longer lists the item"
+
+# (h) tag normalisation restricts the charset to URL-/HTML-safe word chars:
+#     a tag with a slash or HTML metacharacters is sanitised, never stored or
+#     rendered raw — so it can't federate a dead href, 404 its own listing, or
+#     inject markup. (Security-review regression.)
+XPATH=$(upload "$SOCK" "$JAR" "$PDF_TWO" "Tag charset probe" "" "<p>x</p>" "99" "" "" "rpg/2024 c++ safe <b>x</b>")
+XURL="http://localhost$XPATH"
+# rpg/2024 → rpg2024 ; c++ → c ; "<b>x</b>" → bxb ; safe → safe (sorted)
+assert_sql "$DB" \
+    "SELECT group_concat(tag, ',') FROM (SELECT tag FROM item_tag WHERE item_id='$XURL' ORDER BY tag);" \
+    "bxb,c,rpg2024,safe" "tags restricted to URL/HTML-safe word chars (no '/','+','<','>')"
+XHTML=$(fetch_html_anon "$SOCK" "$XPATH")
+if printf '%s' "$XHTML" | grep -q '<b>x</b>'; then
+    red "a tag injected raw HTML into the item page"
+    exit 1
+fi
+green "  ✓ tag with HTML metacharacters is sanitised on render"
+# the sanitised single-segment tag routes cleanly (no slash → no 404).
+assert_grep "$(fetch_html_anon "$SOCK" "/tags/rpg2024")" "Tag charset probe" \
+    "sanitised tag (rpg/2024 → rpg2024) routes to a valid /tags listing"
+# the federated Hashtag href is a single clean path segment (no slash after /tags/).
+XAP=$(fetch_ap_anon "$SOCK" "$XPATH")
+assert_grep "$XAP" '/tags/rpg2024' "federated Hashtag href is a clean single segment"
+
 green ""
 green "=========================================="
 green "  e2e (socket) passed.  data dir: $DATA"

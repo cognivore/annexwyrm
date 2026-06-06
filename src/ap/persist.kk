@@ -75,3 +75,28 @@ fun text-col-as-list( v : sql-value ) : list<string>
   match v
     SqlText(s) -> [s]
     _          -> []
+
+// ----------------------------------------------------------------------
+//  Item tags (the item_tag side table)
+// ----------------------------------------------------------------------
+
+// Replace an item's tags wholesale. Tags must already be normalised
+// (lowercase, no '#') — see annex/item's parse-tags.
+pub fun save-item-tags( item-id : url, tags : list<string> ) : db ()
+  val _ = exec("DELETE FROM item_tag WHERE item_id = ?", [txt(item-id)])
+  tags.foreach(fn(t) insert-one-tag(item-id, t))
+
+fun insert-one-tag( item-id : url, tag : string ) : db ()
+  val _ = exec(
+    "INSERT OR IGNORE INTO item_tag (item_id, tag) VALUES (?,?)",
+    [txt(item-id), txt(tag)]
+  )
+  ()
+
+// An item's tags, sorted. Source of truth for both rendering and the
+// federated `tag` array (emit-create/emit-update read it here).
+pub fun load-item-tags( item-id : url ) : db list<string>
+  val rows = query(
+    "SELECT tag FROM item_tag WHERE item_id = ? ORDER BY tag", [txt(item-id)]
+  )
+  rows.flatmap(fn(row) text-col-as-list(row.col(0)))

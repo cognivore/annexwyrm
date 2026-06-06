@@ -14,9 +14,10 @@ import annex/item
 import annex/publish
 import web/html/layout
 
-pub fun render-item-page( i : annex-item, likes : int, shares : int, is-owner : bool ) : div string
+pub fun render-item-page( i : annex-item, likes : int, shares : int, is-owner : bool,
+                          tags : list<string> ) : div string
   val followers = i.owner ++ "/followers"
-  val obj = item-to-ap-object(i, followers)
+  val obj = item-to-ap-object(i, followers, tags)
   val jsonld = json/show(ap-object/to-json(obj))
   val title = if i.name == "" then "(untitled)" else i.name
   val body = ([
@@ -31,6 +32,7 @@ pub fun render-item-page( i : annex-item, likes : int, shares : int, is-owner : 
     "  </p>",
     summary-block(i),
     content-block(i),
+    tags-block(tags),
     file-state-block(i, is-owner),
     owner-actions-block(i, is-owner),
     "</article>"
@@ -89,6 +91,16 @@ fun file-state-block( i : annex-item, is-owner : bool ) : string
            "    <button type=\"submit\">publish file</button>\n" ++
            "  </form>"
     "  <p class=\"file-state archived\">file archived, not published</p>" ++ action
+
+// Public tag chips, each linking to its /tags/<tag> listing. Shown to
+// everyone (tags are public metadata). "" when the item has none.
+fun tags-block( tags : list<string> ) : string
+  match tags
+    Nil -> ""
+    _   -> "  <p class=\"tags\">" ++ tags.map(tag-chip).join(" ") ++ "</p>"
+
+fun tag-chip( t : string ) : string
+  "<a class=\"tag\" href=\"/tags/" ++ esc(t) ++ "\">#" ++ esc(t) ++ "</a>"
 
 // Owner-only review actions (edit). Anonymous visitors see nothing — a
 // review is read-only to everyone but its single local owner. The blob's

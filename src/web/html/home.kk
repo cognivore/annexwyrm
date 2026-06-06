@@ -19,9 +19,27 @@ pub fun render-home( rows : list<home-row>, instance-name : string ) : string
   val body = ([
     "<h1>" ++ esc(instance-name) ++ "</h1>",
     "<p class=\"subtitle\">a federated archive — pieces dropped here are mirrored, optionally shared.</p>",
+    search-box(""),
     items-list(rows)
   ]).join("\n")
   layout(instance-name, "", "<a href=\"/\">archive</a>", body)
+
+// A reusable search form + "browse tags" link. `q` pre-fills the box (used
+// on the search results page). GET so the query lands in the URL/bookmarkable.
+pub fun search-box( q : string ) : string
+  ([
+    "<form class=\"search\" action=\"/search\" method=\"get\" role=\"search\">",
+    "  <input type=\"search\" name=\"q\" value=\"" ++ esc(q) ++
+      "\" placeholder=\"search titles, reviews, tags…\" aria-label=\"search\">",
+    "  <button type=\"submit\">search</button>",
+    "  <a class=\"browse-tags\" href=\"/tags\">browse tags</a>",
+    "</form>"
+  ]).join("\n")
+
+// The <ol> of item rows, exposed so the search + tag pages render results
+// identically to the home list.
+pub fun render-item-list( rows : list<home-row> ) : string
+  items-list(rows)
 
 fun items-list( rows : list<home-row> ) : string
   match rows

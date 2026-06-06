@@ -112,6 +112,47 @@ pub fun rating-signed( r : int ) : string
 pub fun annex-item/is-review( i : annex-item ) : bool
   i.in-reply-to != ""
 
+// ----------------------------------------------------------------------
+//  Tags
+// ----------------------------------------------------------------------
+
+// Parse a free-text tag field (the upload/edit form) into a clean,
+// de-duplicated, capped list of normalised tags. Accepts whitespace- and
+// comma-separated input, with or without leading '#'. Normalisation:
+// trim, strip leading '#', lowercase. Empty tokens and over-long tags are
+// dropped; the list is de-duped (order-preserving) and capped at 20.
+pub fun parse-tags( input : string ) : list<string>
+  val spaced = input.replace-all(",", " ").replace-all("\n", " ").replace-all("\t", " ")
+  val toks = spaced.split(" ").map(normalize-tag).filter(fn(t) t != "" && t.count <= 50)
+  toks.dedup-tags.take(20)
+
+// Normalise a single token to a URL-safe, federation-safe slug: strip '#',
+// lowercase, then keep ONLY ASCII word chars + '-'/'_'. Dropping every other
+// character (slash, punctuation, HTML metachars, whitespace remnants) is what
+// makes a tag simultaneously a valid single URL path segment for /tags/<tag>,
+// a conformant Mastodon Hashtag `name`, and impossible to use as an HTML/URL
+// injection vector. (Per the security review: a tag like "rpg/2024" must not
+// federate a dead href or 404 its own listing.)
+fun normalize-tag( s : string ) : string
+  strip-hashes(s.trim).to-lower.list.filter(is-tag-char).string
+
+fun is-tag-char( c : char ) : bool
+  (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_'
+
+// Drop any leading '#' (one or more) without recursion — total.
+fun strip-hashes( s : string ) : string
+  s.list.drop-while(fn(c) c == '#').string
+
+fun dedup-tags( xs : list<string> ) : list<string>
+  dedup-go(xs, [])
+
+fun dedup-go( xs : list<string>, seen : list<string> ) : list<string>
+  match xs
+    Nil -> seen.reverse
+    Cons(x, rest) ->
+      if seen.any(fn(s) s == x) then dedup-go(rest, seen)
+      else dedup-go(rest, Cons(x, seen))
+
 // Every item is always federated: a single-tenant public review site has
 // no private items. (The blob — not the review — is what publish-file
 // gates, via `file-published`.) Kept as a predicate so callers that asked

@@ -105,6 +105,7 @@ post_action() {
 edit_item() {
     local sock="$1" jar="$2" slug="$3"
     local name="$4" summary="$5" content="$6" rating="$7" in_reply_to="$8"
+    local tags="${9:-}"
     local hdr; hdr=$(mktemp)
     local code
     code=$(curl --silent --show-error \
@@ -114,6 +115,7 @@ edit_item() {
                 --data-urlencode "content=$content" \
                 --data-urlencode "rating=$rating" \
                 --data-urlencode "in_reply_to=$in_reply_to" \
+                --data-urlencode "tags=$tags" \
                 --output /dev/null --dump-header "$hdr" \
                 --write-out '%{http_code}' \
                 "http://x/items/$slug/edit")
@@ -161,6 +163,7 @@ upload() {
     local title="$4" summary="$5" content="$6"
     local rating="$7" in_reply_to="$8"
     local publish_file="${9:-}"
+    local tags="${10:-}"
 
     # `--form-string` for everything literal — `-F` interprets `<` and `@`
     # as file-read directives, which mangles HTML content and titles.
@@ -174,6 +177,9 @@ upload() {
     )
     if [ "$publish_file" = "1" ]; then
         form_args+=( --form-string "publish_file=1" )
+    fi
+    if [ -n "$tags" ]; then
+        form_args+=( --form-string "tags=$tags" )
     fi
 
     # We follow no redirects; the daemon should respond with 303 + Location.

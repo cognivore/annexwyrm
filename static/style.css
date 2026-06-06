@@ -211,3 +211,18 @@ button:hover { background: #d6cea1; }
     padding: 2px 8px;
     margin: 4px 0;
 }
+
+/* --- tags & search ------------------------------------------------------ */
+.search { display: flex; gap: 6px; align-items: center; margin: 12px 0; flex-wrap: wrap; }
+.search input[type="search"] { flex: 1 1 16rem; padding: 4px 6px; }
+.search .browse-tags { margin-left: auto; font-size: 13px; }
+.tags { margin: 8px 0; }
+a.tag {
+    display: inline-block; font-size: 12px; line-height: 1.6;
+    padding: 0 6px; margin: 2px 2px 2px 0;
+    border: 1px solid var(--border); border-radius: 3px;
+    background: #f4f4f4; color: #335; text-decoration: none;
+}
+a.tag:hover { background: #e8e8f0; }
+.tag-cloud { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.tag-cloud .count { color: var(--fg-mute); font-size: 12px; }

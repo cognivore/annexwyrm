@@ -17,7 +17,7 @@ import core/types
 import annex/item
 import web/html/layout
 
-pub fun render-edit-form( i : annex-item, id : string ) : string
+pub fun render-edit-form( i : annex-item, id : string, tags : list<string> ) : string
   val body = ([
     "<h1>edit review</h1>",
     "<form action=\"/items/" ++ esc(id) ++ "/edit\" method=\"post\">",
@@ -29,6 +29,9 @@ pub fun render-edit-form( i : annex-item, id : string ) : string
       esc(i.summary) ++ "</textarea></label>",
     "    <label>description / review body (HTML, hyperlinks welcome): " ++
       "<textarea name=\"content\" rows=\"8\">" ++ esc(i.content) ++ "</textarea></label>",
+    "    <label>tags (space- or comma-separated, # optional): " ++
+      "<input type=\"text\" name=\"tags\" value=\"" ++ esc(tags.join(" ")) ++
+      "\" placeholder=\"mtg kamigawa game-design\"></label>",
     "  </fieldset>",
     "  <fieldset>",
     "    <legend>rating &amp; review</legend>",
