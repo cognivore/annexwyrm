@@ -450,6 +450,11 @@ green "  review B (+3): $REVIEW_B_PATH"
 
 note "=== anonymous browser ==="
 note "  homepage shows every item + ratings (no privacy filter)"
+# The "items" breadcrumb links to /items (and /items/) — both must list the
+# archive, not 404.
+assert_status "$SOCK" "/items" 200
+assert_status "$SOCK" "/items/" 200
+assert_grep "$(fetch_html_anon "$SOCK" "/items")" "Archived PDF" "/items lists the archive (no 404)"
 HOME_HTML=$(fetch_html_anon "$SOCK" "/")
 assert_grep "$HOME_HTML" "Review: praise PDF one"            "review A title on home"
 assert_grep "$HOME_HTML" "Review: praise PDF two even more"  "review B title on home"

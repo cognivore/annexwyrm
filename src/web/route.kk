@@ -73,6 +73,10 @@ pub fun dispatch( req : request )
       handle-following(req, u)
 
     // Items ---------------------------------------------------------------
+    // /items and /items/ (the "items" breadcrumb) list the archive — same as
+    // home. segments() drops the trailing empty segment, so both forms match.
+    ("GET",    Cons("items", Nil)) ->
+      handle-home(req)
     ("GET",    Cons("items", Cons(id, Nil))) ->
       handle-item(req, id)
     ("GET",    Cons("items", Cons(id, Cons("edit", Nil)))) ->
