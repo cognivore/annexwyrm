@@ -27,11 +27,16 @@ echo "Syncing source -> $HOST:$PROD"
 rsync -az --delete --filter="merge .rsync-filter" ./ "$HOST:$PROD"
 
 echo "Building on the server (koka native)..."
+# Build to a temp name and atomically rename over the live binary: the
+# running daemon holds build/annexwyrm open, so koka's plain copy onto it
+# fails with ETXTBSY ("could not copy file"). rename(2) replaces the
+# directory entry while the running process keeps its old inode.
 ssh "$HOST" 'cd /opt/annexwyrm && rm -rf build/.koka && \
   koka -O2 --target=c --include=src --ccincdir="$(pwd)/csrc" \
        --builddir=build/.koka --cclib="sqlite3;ssl;crypto;curl;argon2" \
-       -o build/annexwyrm src/annexwyrm.kk && \
-  chmod +x build/annexwyrm && strip build/annexwyrm'
+       -o build/annexwyrm.new src/annexwyrm.kk && \
+  chmod +x build/annexwyrm.new && strip build/annexwyrm.new && \
+  mv -f build/annexwyrm.new build/annexwyrm'
 
 echo "Restarting service..."
 ssh "$HOST" 'systemctl restart annexwyrm && sleep 2 && systemctl is-active annexwyrm'

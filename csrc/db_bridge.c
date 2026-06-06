@@ -358,6 +358,22 @@ static int aw_migrate_item(sqlite3* db) {
       NULL, NULL, NULL);
     if (rc != SQLITE_OK) return rc;
   }
+  /* The dead `privacy` column MUST be dropped, not kept: the old schema
+   * declared it TEXT NOT NULL with no default, so the new save-item INSERT
+   * (which no longer supplies it) fails the NOT NULL constraint and — with
+   * exec returns discarded — the item row silently vanishes while the
+   * Create activity and the archived blob persist. Found live on prod
+   * (wyrm.fere.me) on the first real upload after migration; every hermetic
+   * suite uses fresh DBs and could not see it. SQLite supports DROP COLUMN
+   * since 3.35 (prod ships 3.45, nixpkgs 3.51); the old privacy index must
+   * go first or the drop is refused. */
+  if (aw_item_has_column(db, "privacy")) {
+    sqlite3_exec(db, "DROP INDEX IF EXISTS item_privacy_published;",
+                 NULL, NULL, NULL);
+    rc = sqlite3_exec(db, "ALTER TABLE item DROP COLUMN privacy;",
+                      NULL, NULL, NULL);
+    if (rc != SQLITE_OK) return rc;
+  }
   return SQLITE_OK;
 }
 
