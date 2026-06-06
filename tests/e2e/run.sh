@@ -1,20 +1,25 @@
 #!/usr/bin/env bash
-# tests/e2e/run.sh — end-to-end test against a local daemon.
+# tests/e2e/run.sh — end-to-end test against a local daemon (Unix socket).
 #
-# Flow (all inside the Nix dev shell, no extra installs):
-#   1. fresh data dir + sqlite db
-#   2. start the daemon on a temp Unix socket
-#   3. log in via session cookie
-#   4. upload two generated PDFs (one public, one private), each with
-#      an optional rclone gdrive mirror
-#   5. upload two reviews — one of the public PDF, one of the private
-#      PDF, the latter linking to the private PDF in its content
-#   6. verify the rendered HTML contains ratings + hyperlinks
-#   7. (optional) verify the PDFs landed in gdrive:annexwyrm-test/
+# The single-tenant file-publication model (tests/e2e/SPEC-file-publication.md):
+# every item is ALWAYS public and federates immediately (Create on upload);
+# the only gate is the FILE BLOB. The default is "archived" — the blob goes
+# only to the encrypted archive remote, the item page shows no download link,
+# and nothing about the blob appears in the federated object. `publish-file`
+# (at upload via a checkbox, or later via POST /items/<id>/publish-file) also
+# copies the blob to the public remote, mints a download URL, stores it,
+# renders it, adds it to the AP url[], and emits an Update.
+#
+# Hermetic seam: rclone treats a plain absolute path as the local backend,
+# so both remotes point at temp dirs and we assert REAL BYTES land there.
+# blob-public-url cannot mint a URL for a local path, so ANNEXWYRM_PUBLIC_URL_BASE
+# supplies a constructed URL (http://example.test/dl/<slug>). The real
+# encrypted-at-rest / gdrive URL shapes are asserted only behind
+# ANNEXWYRM_E2E_GDRIVE=1.
 #
 # Usage:
-#     just test-e2e                  # runs without gdrive sync (default)
-#     ANNEXWYRM_E2E_GDRIVE=1 just test-e2e   # also pushes to gdrive
+#     just test-e2e                          # hermetic (default)
+#     ANNEXWYRM_E2E_GDRIVE=1 just test-e2e   # also exercises the real remotes
 #
 # The script cleans up its own data dir + daemon on exit.
 
@@ -36,17 +41,37 @@ SOCK="$TMP/sock"
 LOG="$TMP/daemon.log"
 JAR="$TMP/cookies"
 USE_GDRIVE="${ANNEXWYRM_E2E_GDRIVE:-0}"
-GDRIVE_PREFIX="gdrive:annexwyrm-test"
 
-note "tmp dir:       $TMP"
-note "data dir:      $DATA"
-note "socket:        $SOCK"
-note "use gdrive:    $USE_GDRIVE"
+# The hermetic blob backends (local-backend temp dirs) and the public-URL
+# seam. The gdrive-gated variant overrides these with real remotes and
+# unsets the URL base so the real `rclone link` path runs.
+if [ "$USE_GDRIVE" = "1" ]; then
+    ARCHIVE_REMOTE="gdrive-crypt:annexwyrm-test"
+    PUBLIC_REMOTE="gdrive:annexwyrm-public-test"
+    PUBLIC_URL_BASE=""
+else
+    ARCHIVE_REMOTE="$TMP/archive"
+    PUBLIC_REMOTE="$TMP/public"
+    PUBLIC_URL_BASE="http://example.test/dl"
+    mkdir -p "$ARCHIVE_REMOTE" "$PUBLIC_REMOTE"
+fi
+
+note "tmp dir:        $TMP"
+note "data dir:       $DATA"
+note "socket:         $SOCK"
+note "use gdrive:     $USE_GDRIVE"
+note "archive remote: $ARCHIVE_REMOTE"
+note "public remote:  $PUBLIC_REMOTE"
+note "public url base:${PUBLIC_URL_BASE:-(rclone link)}"
 
 cleanup() {
     if [ -n "${DAEMON_PID:-}" ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
         kill "$DAEMON_PID" 2>/dev/null || true
         wait "$DAEMON_PID" 2>/dev/null || true
+    fi
+    if [ -n "${FAIL_PID:-}" ] && kill -0 "$FAIL_PID" 2>/dev/null; then
+        kill "$FAIL_PID" 2>/dev/null || true
+        wait "$FAIL_PID" 2>/dev/null || true
     fi
     if [ "${KEEP_TMP:-0}" != "1" ]; then
         rm -rf "$TMP"
@@ -59,13 +84,9 @@ trap cleanup EXIT INT TERM
 mkdir -p "$DATA"
 
 # ---------------------------------------------------------------------------
-#  build — use the Nix package binary, the exact artifact home-manager
-#  deploys. We deliberately do NOT use the dev-shell `just build` here: on
-#  this darwin setup the dev shell's NIX_CFLAGS_COMPILE injects a mismatched
-#  libcxx `-isystem` ahead of the macOS SDK, which shadows <time.h> and
-#  breaks the csrc bridge compile; the sandboxed `nix build .#default` has a
-#  clean include path and is what actually ships. Set ANNEXWYRM_BINARY to
-#  point the harness at a specific binary (e.g. the deployed store path).
+#  build — the Nix package binary (see the long note in the old suite: the
+#  dev-shell `just build` is broken on this darwin host; nix build .#default
+#  is what ships). ANNEXWYRM_BINARY overrides.
 # ---------------------------------------------------------------------------
 
 if [ -n "${ANNEXWYRM_BINARY:-}" ]; then
@@ -96,6 +117,20 @@ ANNEXWYRM_PASSWORD="$TEST_PASS" \
 ANNEXWYRM_DATA="$DATA" \
     "$BINARY" init "$DATA"
 
+# A fresh init MUST produce an item table with the file-publication columns
+# and NO privacy column (the model's first definition-of-done clause).
+COLS=$(sqlite3 "$DATA/annexwyrm.db" "PRAGMA table_info(item);" | awk -F'|' '{print $2}' | tr '\n' ' ')
+note "fresh item columns: $COLS"
+case "$COLS" in
+    *file_published*file_public_url*file_view_url*) green "  ✓ file-publication columns present" ;;
+    *) red "fresh schema missing file-publication columns: $COLS"; exit 1 ;;
+esac
+if printf '%s' "$COLS" | grep -qw "privacy"; then
+    red "fresh schema still has a privacy column (it must be dropped from fresh init)"
+    exit 1
+fi
+green "  ✓ fresh schema has no privacy column"
+
 login_row=$(sqlite3 "$DATA/annexwyrm.db" \
     "SELECT 1 FROM local_login LIMIT 1;" || true)
 if [ "$login_row" != "1" ]; then
@@ -110,6 +145,10 @@ ANNEXWYRM_USERNAME="alice" \
 ANNEXWYRM_INSTANCE_NAME="alice's e2e archive" \
 ANNEXWYRM_SOCKET="$SOCK" \
 ANNEXWYRM_DATA="$DATA" \
+ANNEXWYRM_ARCHIVE_REMOTE="$ARCHIVE_REMOTE" \
+ANNEXWYRM_PUBLIC_REMOTE="$PUBLIC_REMOTE" \
+ANNEXWYRM_PUBLIC_URL_BASE="$PUBLIC_URL_BASE" \
+ANNEXWYRM_SERVE_DRAIN=0 \
     "$BINARY" serve > "$LOG" 2>&1 &
 DAEMON_PID=$!
 
@@ -120,8 +159,6 @@ wait_for_socket "$SOCK" 10 || {
 }
 note "daemon up (pid $DAEMON_PID)"
 
-# Smoke check: actually talk to it. The accept() loop sometimes takes a
-# beat to be ready even after the socket appears; retry for up to 5s.
 ready=0
 for _ in $(seq 1 10); do
     if curl --silent --output /dev/null --max-time 2 \
@@ -133,10 +170,7 @@ for _ in $(seq 1 10); do
 done
 if [ "$ready" != "1" ]; then
     red "daemon's socket isn't accepting HTTP after 5s"
-    yellow "daemon log:"
-    cat "$LOG" >&2 || true
-    yellow "process state:"
-    ps -p "$DAEMON_PID" -o pid,state,command 2>&1 || true
+    yellow "daemon log:"; cat "$LOG" >&2 || true
     exit 1
 fi
 green "  daemon responds"
@@ -148,340 +182,323 @@ green "  daemon responds"
 login "$SOCK" "$JAR" "alice" "$TEST_PASS"
 
 # ---------------------------------------------------------------------------
-#  generate the two PDFs
+#  generate the PDFs
 # ---------------------------------------------------------------------------
 
-PDF_PUBLIC="$TMP/public.pdf"
-PDF_PRIVATE="$TMP/private.pdf"
+PDF_ONE="$TMP/one.pdf"
+PDF_TWO="$TMP/two.pdf"
 
 note "generating PDFs"
-python3 "$THIS_DIR/make-pdf.py" "Public PDF: a serene treatise" > "$PDF_PUBLIC"
-python3 "$THIS_DIR/make-pdf.py" "Private PDF: the inner sanctum"  > "$PDF_PRIVATE"
+python3 "$THIS_DIR/make-pdf.py" "PDF one: a serene treatise" > "$PDF_ONE"
+python3 "$THIS_DIR/make-pdf.py" "PDF two: the inner sanctum"  > "$PDF_TWO"
 
-[ -s "$PDF_PUBLIC" ]  || { red "empty public PDF";  exit 1; }
-[ -s "$PDF_PRIVATE" ] || { red "empty private PDF"; exit 1; }
+[ -s "$PDF_ONE" ] || { red "empty PDF one"; exit 1; }
+[ -s "$PDF_TWO" ] || { red "empty PDF two"; exit 1; }
 
-# ---------------------------------------------------------------------------
-#  upload the public PDF
-# ---------------------------------------------------------------------------
+DB="$DATA/annexwyrm.db"
+ACTOR_URL="http://localhost/users/alice"   # local-actor-url() with ANNEXWYRM_USERNAME=alice
 
-note "uploading public PDF"
+# ===========================================================================
+#  Step A — upload ARCHIVED (the default). The review federates (Create), but
+#  the file goes only to the archive remote and the page hides the download.
+# ===========================================================================
 
-remote_kind=""; remote_target=""; remote_label=""
+note "=== Step A — upload archived PDF (default, no publish_file) ==="
+ARCH_PATH=$(upload "$SOCK" "$JAR" "$PDF_ONE" \
+    "Archived PDF" "" "<p>secret research; key results below.</p>" "99" "")
+ARCH_URL="http://localhost$ARCH_PATH"
+ARCH_SLUG="${ARCH_PATH##*/}"
+green "  archived item: $ARCH_PATH (slug $ARCH_SLUG)"
+
+# (a) screen — the review renders to anon (200), shows the archived line, has
+#     NO download anchor.
+assert_status "$SOCK" "$ARCH_PATH" 200
+A_HTML=$(fetch_html_anon "$SOCK" "$ARCH_PATH")
+assert_grep "$A_HTML" "secret research; key results below." "review body renders to anon"
+assert_grep "$A_HTML" "file archived, not published"         "archived file-state line"
+if printf '%s' "$A_HTML" | grep -q 'class="download"'; then
+    red "archived item page leaked a download anchor"
+    printf '%s\n' "$A_HTML" | head -40 >&2
+    exit 1
+fi
+green "  ✓ no download anchor on the archived page"
+
+# (b) daemon log — upload/done file_published=0 AND a Create emission.
+assert_log_grep "$LOG" \
+    "^\[info\] upload/done id=$ARCH_URL size=[0-9]+ file_published=0\$" \
+    "archived upload/done"
+assert_log_grep "$LOG" \
+    '^\[info\] outbox/publish id=http://localhost/activities/[0-9a-f]+ type=Create recipients=0' \
+    "upload emits Create (recipients=0, no followers)"
+
+# (c) DB — file_published=0, no URL, exactly one Create for the item.
+assert_sql "$DB" "SELECT file_published FROM item WHERE id='$ARCH_URL';" \
+    "0" "archived item file_published=0"
+assert_sql "$DB" "SELECT file_public_url IS NULL OR file_public_url='' FROM item WHERE id='$ARCH_URL';" \
+    "1" "archived item has no public URL"
+assert_sql "$DB" "SELECT count(*) FROM activity WHERE type='Create' AND object_id='$ARCH_URL';" \
+    "1" "exactly one Create for the archived item"
+assert_sql "$DB" "SELECT inbox_remote FROM activity WHERE type='Create' AND object_id='$ARCH_URL';" \
+    "0" "the Create is outbound"
+
+# (c) on-disk bytes — landed ONLY in the archive backend; nothing public yet.
 if [ "$USE_GDRIVE" = "1" ]; then
-    remote_kind="rclone"
-    remote_target="$GDRIVE_PREFIX/public.pdf"
-    remote_label="alice gdrive (public)"
+    note "  (gdrive) archive bytes asserted by the gated block below"
+else
+    [ -f "$ARCHIVE_REMOTE/$ARCH_SLUG" ] || { red "archive blob missing on disk"; exit 1; }
+    green "  ✓ archive blob present at $ARCHIVE_REMOTE/$ARCH_SLUG"
+    cmp -s "$ARCHIVE_REMOTE/$ARCH_SLUG" "$PDF_ONE" \
+        && green "  ✓ archive blob bytes == plaintext (local backend)" \
+        || { red "archive blob bytes differ from the uploaded PDF"; exit 1; }
+    if [ -n "$(ls -A "$PUBLIC_REMOTE")" ]; then
+        red "public remote is non-empty after an ARCHIVED upload — blob leaked"
+        ls -la "$PUBLIC_REMOTE" >&2
+        exit 1
+    fi
+    green "  ✓ public remote empty after archived upload"
 fi
 
-PUBLIC_PATH=$(upload "$SOCK" "$JAR" "$PDF_PUBLIC" \
-    "Public PDF" "" "<p>A document we want everyone to see.</p>" \
-    "public" "1" "" \
-    "$remote_kind" "$remote_target" "$remote_label")
-PUBLIC_URL="http://localhost$PUBLIC_PATH"
-green "  public PDF item: $PUBLIC_PATH"
+# ===========================================================================
+#  Step B — publish-file later. Copies to the public remote, mints + stores
+#  the URL, renders the download link, and emits an Update.
+# ===========================================================================
 
-# ---------------------------------------------------------------------------
-#  upload the private PDF
-# ---------------------------------------------------------------------------
+note "=== Step B — POST $ARCH_PATH/publish-file ==="
+B_RESULT=$(post_action "$SOCK" "$JAR" "$ARCH_PATH/publish-file")
+B_STATUS="${B_RESULT%%$'\t'*}"
+B_LOC="${B_RESULT#*$'\t'}"
 
-note "uploading private PDF"
+# (a) screen — 303 → the item, then the published download link is present
+#     and the archived line is gone.
+[ "$B_STATUS" = "303" ] || { red "publish-file: expected 303, got $B_STATUS"; exit 1; }
+green "  ✓ publish-file → 303"
+[ "$B_LOC" = "$ARCH_PATH" ] || { red "publish-file: expected Location $ARCH_PATH, got $B_LOC"; exit 1; }
+green "  ✓ publish-file Location = $ARCH_PATH"
 
+B_HTML=$(fetch_html_anon "$SOCK" "$ARCH_PATH")
 if [ "$USE_GDRIVE" = "1" ]; then
-    remote_target="$GDRIVE_PREFIX/private.pdf"
-    remote_label="alice gdrive (private)"
+    assert_grep "$B_HTML" 'class="download" href="https://drive.google.com/uc?export=download' \
+        "published download link (gdrive uc?export=download form)"
+else
+    assert_grep "$B_HTML" "class=\"download\" href=\"http://example.test/dl/$ARCH_SLUG\"" \
+        "published download link (hermetic constructed URL)"
+fi
+if printf '%s' "$B_HTML" | grep -q 'file archived, not published'; then
+    red "published item page still shows the archived line"
+    exit 1
+fi
+green "  ✓ archived line gone on the published page"
+
+# (b) daemon log — publish-file emits Update (recipients=0).
+assert_log_grep "$LOG" \
+    '^\[info\] outbox/publish id=http://localhost/activities/[0-9a-f]+ type=Update recipients=0' \
+    "publish-file emits Update (recipients=0)"
+
+# (c) DB — file_published=1, URL stored, exactly one Update whose raw carries
+#     the URL, the Create still present, zero deliveries.
+assert_sql "$DB" "SELECT file_published FROM item WHERE id='$ARCH_URL';" \
+    "1" "item now file_published=1"
+if [ "$USE_GDRIVE" = "1" ]; then
+    assert_sql "$DB" "SELECT file_public_url LIKE 'https://drive.google.com/uc?export=download%' FROM item WHERE id='$ARCH_URL';" \
+        "1" "public URL is the gdrive uc?export=download form"
+    assert_sql "$DB" "SELECT file_view_url LIKE 'https://drive.google.com/open?id=%' FROM item WHERE id='$ARCH_URL';" \
+        "1" "view URL is the gdrive open?id form"
+    assert_sql "$DB" "SELECT raw LIKE '%uc?export=download%' FROM activity WHERE type='Update' AND object_id='$ARCH_URL';" \
+        "1" "Update raw carries the download URL"
+else
+    assert_sql "$DB" "SELECT file_public_url FROM item WHERE id='$ARCH_URL';" \
+        "http://example.test/dl/$ARCH_SLUG" "public URL is the constructed hermetic URL"
+    assert_sql "$DB" "SELECT raw LIKE '%http://example.test/dl/%' FROM activity WHERE type='Update' AND object_id='$ARCH_URL';" \
+        "1" "Update raw carries the download URL"
+fi
+assert_sql "$DB" "SELECT count(*) FROM activity WHERE type='Update' AND object_id='$ARCH_URL';" \
+    "1" "exactly one Update for the item"
+assert_sql "$DB" "SELECT inbox_remote FROM activity WHERE type='Update' AND object_id='$ARCH_URL';" \
+    "0" "the Update is outbound"
+assert_sql "$DB" "SELECT actor_id FROM activity WHERE type='Update' AND object_id='$ARCH_URL';" \
+    "$ACTOR_URL" "Update actor = local actor"
+assert_sql "$DB" "SELECT count(*) FROM activity WHERE type='Create' AND object_id='$ARCH_URL';" \
+    "1" "the Create from Step A still exists (publish-file does not retract it)"
+UPDATE_AID=$(sqlite3 "$DB" "SELECT id FROM activity WHERE type='Update' AND object_id='$ARCH_URL';")
+assert_sql "$DB" "SELECT count(*) FROM delivery WHERE activity_id='$UPDATE_AID';" \
+    "0" "zero deliveries for the Update (no followers)"
+
+# (c) on-disk bytes — now present in the public backend; archive untouched.
+if [ "$USE_GDRIVE" != "1" ]; then
+    [ -f "$PUBLIC_REMOTE/$ARCH_SLUG" ] || { red "public blob missing after publish-file"; exit 1; }
+    green "  ✓ public blob present at $PUBLIC_REMOTE/$ARCH_SLUG"
+    [ -f "$ARCHIVE_REMOTE/$ARCH_SLUG" ] || { red "archive blob vanished after publish-file"; exit 1; }
+    green "  ✓ archive blob retained after publish-file"
 fi
 
-PRIVATE_PATH=$(upload "$SOCK" "$JAR" "$PDF_PRIVATE" \
-    "Private PDF" "" "<p>This stays with alice.</p>" \
-    "private" "1" "" \
-    "$remote_kind" "$remote_target" "$remote_label")
-PRIVATE_URL="http://localhost$PRIVATE_PATH"
-green "  private PDF item: $PRIVATE_PATH"
+# ===========================================================================
+#  Step C — publish-file idempotency. A second POST is a harmless no-op, NOT
+#  a double Update.
+# ===========================================================================
+
+note "=== Step C — publish-file idempotency ==="
+C_RESULT=$(post_action "$SOCK" "$JAR" "$ARCH_PATH/publish-file")
+C_STATUS="${C_RESULT%%$'\t'*}"
+[ "$C_STATUS" = "303" ] || { red "second publish-file: expected 303, got $C_STATUS"; exit 1; }
+green "  ✓ second publish-file → 303"
+assert_sql "$DB" "SELECT count(*) FROM activity WHERE type='Update' AND object_id='$ARCH_URL';" \
+    "1" "still exactly one Update (no double emission)"
+assert_sql "$DB" "SELECT file_published FROM item WHERE id='$ARCH_URL';" \
+    "1" "file_published still 1 after a second publish-file"
+
+# ===========================================================================
+#  Step D — owner gate. An anonymous publish-file is forbidden and changes
+#  nothing.
+# ===========================================================================
+
+note "=== Step D — owner gate (anonymous publish-file) ==="
+# Use the as-yet-unpublished PDF two so the negative is meaningful. Upload it
+# archived first.
+TWO_PATH=$(upload "$SOCK" "$JAR" "$PDF_TWO" \
+    "Second PDF" "" "<p>another archived review.</p>" "99" "")
+TWO_URL="http://localhost$TWO_PATH"
+ANON_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+    --unix-socket "$SOCK" --request POST --data '' "http://x$TWO_PATH/publish-file")
+[ "$ANON_CODE" = "403" ] || { red "anon publish-file: expected 403, got $ANON_CODE"; exit 1; }
+green "  ✓ anon publish-file → 403"
+ANON_BODY=$(curl --silent --unix-socket "$SOCK" --request POST --data '' "http://x$TWO_PATH/publish-file")
+assert_grep "$ANON_BODY" "login required" "anon publish-file refused"
+assert_sql "$DB" "SELECT file_published FROM item WHERE id='$TWO_URL';" \
+    "0" "anon publish-file did NOT flip file_published"
+assert_sql "$DB" "SELECT count(*) FROM activity WHERE type='Update' AND object_id='$TWO_URL';" \
+    "0" "anon publish-file emitted no Update"
+
+# ===========================================================================
+#  reviews — the heart of the site: a rating + a hyperlink to another item.
+#  Reviews are pure-Note items (the uploaded "file" is the same PDF here, but
+#  what matters is that they federate immediately and render to anon).
+# ===========================================================================
+
+note "=== reviews — uploaded with ratings + in_reply_to ==="
+REVIEW_A_CONTENT="<p>Praise PDF one. A perfectly reasonable read.</p>"
+REVIEW_A_PATH=$(upload "$SOCK" "$JAR" "$PDF_ONE" \
+    "Review: praise PDF one" "" "$REVIEW_A_CONTENT" "2" "$ARCH_URL")
+green "  review A (+2): $REVIEW_A_PATH"
+
+REVIEW_B_CONTENT="<p>Praise PDF two <em>even more</em> — it builds upon <a href=\"$TWO_URL\">PDF two</a>.</p>"
+REVIEW_B_PATH=$(upload "$SOCK" "$JAR" "$PDF_TWO" \
+    "Review: praise PDF two even more" "" "$REVIEW_B_CONTENT" "3" "$TWO_URL")
+green "  review B (+3): $REVIEW_B_PATH"
 
 # ---------------------------------------------------------------------------
-#  upload review of the public PDF (rating +2)
+#  anonymous browsing — every item is public; the home list shows them ALL.
 # ---------------------------------------------------------------------------
 
-note "uploading review of public PDF (+2)"
-REVIEW_A_CONTENT="<p>Praise public PDF. A perfectly reasonable read.</p>"
-REVIEW_A_PATH=$(upload "$SOCK" "$JAR" "$PDF_PUBLIC" \
-    "Review: praise public PDF" "" "$REVIEW_A_CONTENT" \
-    "public" "2" "$PUBLIC_URL" \
-    "" "" "")
-green "  review of public: $REVIEW_A_PATH"
-
-# ---------------------------------------------------------------------------
-#  upload review of the private PDF (rating +3) with a hyperlink to it
-# ---------------------------------------------------------------------------
-
-note "uploading review of private PDF (+3) with hyperlink"
-REVIEW_B_CONTENT="<p>Praise private PDF <em>even more</em> — it builds upon the ideas from <a href=\"$PRIVATE_URL\">privatePDF</a>.</p>"
-REVIEW_B_PATH=$(upload "$SOCK" "$JAR" "$PDF_PRIVATE" \
-    "Review: praise private PDF even more" "" "$REVIEW_B_CONTENT" \
-    "public" "3" "$PRIVATE_URL" \
-    "" "" "")
-green "  review of private: $REVIEW_B_PATH"
-
-# ---------------------------------------------------------------------------
-#  assertions: anonymous browse the public side
-# ---------------------------------------------------------------------------
-
-note "ASSERTIONS — anonymous browser"
-
-note "  homepage shows both reviews + ratings"
+note "=== anonymous browser ==="
+note "  homepage shows every item + ratings (no privacy filter)"
 HOME_HTML=$(fetch_html_anon "$SOCK" "/")
-assert_grep "$HOME_HTML" "Review: praise public PDF"            "review A title"
-assert_grep "$HOME_HTML" "Review: praise private PDF even more" "review B title"
+assert_grep "$HOME_HTML" "Review: praise PDF one"            "review A title on home"
+assert_grep "$HOME_HTML" "Review: praise PDF two even more"  "review B title on home"
+assert_grep "$HOME_HTML" "Archived PDF"                      "archived item appears on home (no WHERE filter)"
 assert_grep "$HOME_HTML" '\[+2\]' "rating badge +2"
 assert_grep "$HOME_HTML" '\[+3\]' "rating badge +3"
 assert_grep "$HOME_HTML" 'class="rating positive"' "positive-rating css class"
+# The published item carries the [file] marker; no privacy word ever appears.
+assert_grep "$HOME_HTML" '\[file\]' "published item shows the [file] marker"
+if printf '%s' "$HOME_HTML" | grep -qiE 'class="meta">[^<]*· (public|private|unlisted|followers)'; then
+    red "home list still renders a privacy word"
+    exit 1
+fi
+green "  ✓ no privacy word on the home list"
 
-note "  review B page contains the hyperlink to the private PDF"
+note "  review B page contains the hyperlink + three stars + review-of"
 REVIEW_B_HTML=$(fetch_html_anon "$SOCK" "$REVIEW_B_PATH")
-assert_grep "$REVIEW_B_HTML" "href=\"$PRIVATE_URL\""    "hyperlink to private PDF"
-assert_grep "$REVIEW_B_HTML" "★★★"                     "three full stars on review B"
-assert_grep "$REVIEW_B_HTML" "review of"                "review-of badge"
+assert_grep "$REVIEW_B_HTML" "href=\"$TWO_URL\"" "hyperlink to PDF two"
+assert_grep "$REVIEW_B_HTML" "★★★"               "three full stars on review B"
+assert_grep "$REVIEW_B_HTML" "review of"          "review-of badge"
 
-note "  review A page rates +2 and has stars"
+note "  review A page rates +2 and links to PDF one"
 REVIEW_A_HTML=$(fetch_html_anon "$SOCK" "$REVIEW_A_PATH")
-assert_grep "$REVIEW_A_HTML" "★★"                      "two full stars on review A"
-assert_grep "$REVIEW_A_HTML" "$PUBLIC_URL"             "review A links to public PDF"
+assert_grep "$REVIEW_A_HTML" "★★"        "two full stars on review A"
+assert_grep "$REVIEW_A_HTML" "$ARCH_URL" "review A links to PDF one"
 
-note "  private PDF is 404 to the anonymous visitor"
-assert_status "$SOCK" "$PRIVATE_PATH" 404
-
-note "  public PDF is reachable anonymously"
-assert_status "$SOCK" "$PUBLIC_PATH" 200
+note "  every item is reachable anonymously (no 404-for-private)"
+assert_status "$SOCK" "$ARCH_PATH" 200
+assert_status "$SOCK" "$TWO_PATH"  200
+assert_status "$SOCK" "$REVIEW_A_PATH" 200
 
 # ---------------------------------------------------------------------------
 #  Google Drive sync verification (opt-in)
 # ---------------------------------------------------------------------------
 
 if [ "$USE_GDRIVE" = "1" ]; then
-    note "ASSERTIONS — Google Drive landed both PDFs"
-    listing=$(rclone lsf --files-only "$GDRIVE_PREFIX/" 2>&1 || true)
-    assert_grep "$listing" "public.pdf"  "gdrive: public.pdf"
-    assert_grep "$listing" "private.pdf" "gdrive: private.pdf"
+    note "=== Google Drive — archived blob encrypted-at-rest; public blob fetchable ==="
+    # The archived blob lives in the crypt remote; its raw object on the
+    # underlying gdrive is NOT the plaintext. We can't trivially diff bytes
+    # here, but we can assert the listing + that the public copy 200s anon.
+    arch_listing=$(rclone lsf --files-only "$ARCHIVE_REMOTE/" 2>&1 || true)
+    assert_grep "$arch_listing" "$ARCH_SLUG" "gdrive crypt: archive holds the slug"
+    pub_url=$(sqlite3 "$DB" "SELECT file_view_url FROM item WHERE id='$ARCH_URL';")
+    note "  fetching minted public URL anonymously: $pub_url"
+    pub_code=$(curl -sL --output /dev/null --write-out '%{http_code}' "$pub_url" || true)
+    [ "$pub_code" = "200" ] && green "  ✓ public URL fetches 200 anonymously" \
+        || { red "public URL did not fetch 200 (got $pub_code)"; exit 1; }
 fi
 
 # ===========================================================================
-#  PUBLISH / UNPUBLISH federation-emission journey
-#
-#  Drives the two outbox-firing endpoints with the already-logged-in session
-#  from above, and asserts all four observable surfaces at each step: the HTTP
-#  client view, the daemon log line (stderr → $LOG), the `item` row transition,
-#  and the exact `activity` / `delivery` row state. Continuation of the same
-#  daemon/socket/jar/DB — no new fixture. See tests/e2e/SPEC-publish.md.
+#  Step E — archive-put failure (forbid-if-it-didn't-crash control). With the
+#  archive remote pointed at a FILE (rclone rcat fails), an upload MUST 5xx,
+#  save no item, and emit no Create. This proves the mandatory-archive-put
+#  contract is real and not a swallowed error. Run on a SEPARATE daemon so the
+#  broken remote does not poison the main suite.
 # ===========================================================================
 
-note "=== PUBLISH / UNPUBLISH federation journey ==="
+note "=== Step E — archive-put failure → 5xx, no item, no Create ==="
+FAIL_TMP="$TMP/fail"
+FAIL_DATA="$FAIL_TMP/data"; FAIL_SOCK="$FAIL_TMP/sock"; FAIL_LOG="$FAIL_TMP/daemon.log"
+FAIL_JAR="$FAIL_TMP/cookies"; FAIL_PUB="$FAIL_TMP/public"
+BAD_ARCHIVE="$FAIL_TMP/not-a-dir"
+mkdir -p "$FAIL_DATA" "$FAIL_PUB"
+printf 'i am a file, not a directory\n' > "$BAD_ARCHIVE"
 
-# --- §3: subject + identities, fixed once -------------------------------
-SUBJECT_PATH="$PRIVATE_PATH"          # /items/<hex>
-SUBJECT_URL="$PRIVATE_URL"            # http://localhost/items/<hex> — the stored id
-ACTOR_URL="http://localhost/users/alice"   # local-actor-url() with ANNEXWYRM_USERNAME=alice
-DB="$DATA/annexwyrm.db"
+ANNEXWYRM_DOMAIN="localhost" ANNEXWYRM_BASE_URL="http://localhost" \
+ANNEXWYRM_USERNAME="alice" ANNEXWYRM_INSTANCE_NAME="fail" \
+ANNEXWYRM_PASSWORD="$TEST_PASS" ANNEXWYRM_DATA="$FAIL_DATA" \
+    "$BINARY" init "$FAIL_DATA" >/dev/null 2>&1
 
-# --- Step P0: baseline (capture deltas, not absolutes) ------------------
-note "  P0 — baseline (activity/delivery counts, privacy, zero followers)"
-ACT_BEFORE=$(sqlite3 "$DB" "SELECT count(*) FROM activity;")
-DEL_BEFORE=$(sqlite3 "$DB" "SELECT count(*) FROM delivery;")
-note "    activity baseline = $ACT_BEFORE, delivery baseline = $DEL_BEFORE"
-assert_sql "$DB" "SELECT privacy FROM item WHERE id='$SUBJECT_URL';" \
-    "private" "subject starts private"
-assert_sql "$DB" "SELECT count(*) FROM activity WHERE type='Create' AND object_id='$SUBJECT_URL';" \
-    "0" "no pre-existing Create"
-assert_sql "$DB" "SELECT count(*) FROM follow WHERE target_id='$ACTOR_URL' AND state='accepted';" \
-    "0" "zero accepted followers (single-actor instance)"
+ANNEXWYRM_DOMAIN="localhost" ANNEXWYRM_BASE_URL="http://localhost" \
+ANNEXWYRM_USERNAME="alice" ANNEXWYRM_INSTANCE_NAME="fail" \
+ANNEXWYRM_SOCKET="$FAIL_SOCK" ANNEXWYRM_DATA="$FAIL_DATA" \
+ANNEXWYRM_ARCHIVE_REMOTE="$BAD_ARCHIVE" ANNEXWYRM_PUBLIC_REMOTE="$FAIL_PUB" \
+ANNEXWYRM_PUBLIC_URL_BASE="http://example.test/dl" ANNEXWYRM_SERVE_DRAIN=0 \
+    "$BINARY" serve > "$FAIL_LOG" 2>&1 &
+FAIL_PID=$!
+wait_for_socket "$FAIL_SOCK" 10 || { red "fail-daemon did not start"; cat "$FAIL_LOG" >&2; exit 1; }
+for _ in $(seq 1 10); do
+    curl --silent --output /dev/null --max-time 2 --unix-socket "$FAIL_SOCK" "http://x/" >/dev/null 2>&1 && break
+    sleep 0.5
+done
+login "$FAIL_SOCK" "$FAIL_JAR" "alice" "$TEST_PASS"
 
-# --- Step P1: PUBLISH — 303, log line, Create row, zero deliveries ------
-note "  P1 — POST $SUBJECT_PATH/publish (session cookie, empty body, no redirect-follow)"
-P1_RESULT=$(post_action "$SOCK" "$JAR" "$SUBJECT_PATH/publish")
-P1_STATUS="${P1_RESULT%%$'\t'*}"
-P1_LOC="${P1_RESULT#*$'\t'}"
-
-# (a) client sees a 303 to the item path
-if [ "$P1_STATUS" != "303" ]; then
-    red "publish: expected status 303, got $P1_STATUS (a 403/404 here means the auth gate or load-item path fired)"
-    exit 1
-fi
-green "  ✓ publish → 303"
-if [ "$P1_LOC" != "$SUBJECT_PATH" ]; then
-    red "publish: expected Location [$SUBJECT_PATH], got [$P1_LOC]"
-    exit 1
-fi
-green "  ✓ publish Location = $SUBJECT_PATH"
-
-# (b) daemon logged outbox/publish with recipients=0 (the literal zero-delivery mirror)
-assert_log_grep "$LOG" \
-    '^\[info\] outbox/publish id=http://localhost/activities/[0-9a-f]+ type=Create recipients=0' \
-    "publish emission"
-
-# (c) exactly one Create activity row for the subject, shaped correctly
-assert_sql "$DB" "SELECT count(*) FROM activity WHERE type='Create' AND object_id='$SUBJECT_URL';" \
-    "1" "one Create activity for subject"
-assert_sql "$DB" "SELECT actor_id FROM activity WHERE type='Create' AND object_id='$SUBJECT_URL';" \
-    "$ACTOR_URL" "Create actor = local actor"
-assert_sql "$DB" "SELECT object_id FROM activity WHERE type='Create' AND object_id='$SUBJECT_URL';" \
-    "$SUBJECT_URL" "Create object_id = item id"
-assert_sql "$DB" "SELECT inbox_remote FROM activity WHERE type='Create' AND object_id='$SUBJECT_URL';" \
-    "0" "Create is outbound"
-assert_sql "$DB" "SELECT id GLOB 'http://localhost/activities/*' FROM activity WHERE type='Create' AND object_id='$SUBJECT_URL';" \
-    "1" "Create id is minted activity URL"
-assert_sql "$DB" "SELECT raw LIKE '%\"type\":\"Create\"%' AND raw LIKE '%$SUBJECT_URL%' FROM activity WHERE type='Create' AND object_id='$SUBJECT_URL';" \
-    "1" "Create raw contains type+object id"
-
-# (c) delivery rows == follower-inbox count == EXACTLY 0 (the headline invariant)
-assert_sql "$DB" "SELECT count(*) FROM delivery;" \
-    "$DEL_BEFORE" "publish queued zero deliveries (delta == 0)"
-CREATE_AID=$(sqlite3 "$DB" \
-    "SELECT id FROM activity WHERE type='Create' AND object_id='$SUBJECT_URL';")
-assert_sql "$DB" "SELECT count(*) FROM delivery WHERE activity_id='$CREATE_AID';" \
-    "0" "exactly zero deliveries for the Create activity"
-
-# --- Step P2: item row transitioned to public --------------------------
-note "  P2 — item row is now public (same row, updated_at advanced)"
-assert_sql "$DB" "SELECT privacy FROM item WHERE id='$SUBJECT_URL';" \
-    "public" "subject is now public"
-assert_sql "$DB" "SELECT count(*) FROM item WHERE id='$SUBJECT_URL';" \
-    "1" "still exactly one item row"
-# `>=`, not `>`: timestamps are ISO-8601 at one-second granularity, so when
-# publish lands in the same wall-clock second as the original upload the two
-# are equal — a strict `>` made this assertion flaky (it raced). The privacy
-# flip below is the real proof publish did its work; this just guards that
-# updated_at is never stamped *behind* published_at.
-assert_sql "$DB" "SELECT updated_at >= published_at FROM item WHERE id='$SUBJECT_URL';" \
-    "1" "updated_at not behind published_at on publish"
-
-# --- Step P3: the item is now publicly visible over HTTP ----------------
-note "  P3 — anonymous GET now 200 + public-state markers"
-assert_status "$SOCK" "$SUBJECT_PATH" 200
-PUB_HTML=$(fetch_html_anon "$SOCK" "$SUBJECT_PATH")
-assert_grep "$PUB_HTML" '<span class="privacy">public</span>' "privacy meta shows public"
-assert_grep "$PUB_HTML" '/unpublish" method="post"' "publish state offers the unpublish action"
-assert_grep "$PUB_HTML" 'Private PDF' "subject title still renders"
-# negative marker: the publish form MUST be gone (proves the new state, not a cache)
-if printf '%s' "$PUB_HTML" | grep -q '/publish" method="post"'; then
-    red "published item still shows a publish form"
-    printf '%s\n' "$PUB_HTML" | head -40 >&2
-    exit 1
-fi
-green "  ✓ no stale publish form on the published page"
-# (b) read render is pure (no log line); assert the daemon survived the request
-kill -0 "$DAEMON_PID" || { red "daemon died serving the published item page"; exit 1; }
-green "  ✓ daemon still alive after public render"
-
-# --- Step U1: UNPUBLISH — 303, delete log, Delete row, zero deliveries --
-note "  U1 — POST $SUBJECT_PATH/unpublish (emit-delete runs BEFORE revert-to-private)"
-U1_RESULT=$(post_action "$SOCK" "$JAR" "$SUBJECT_PATH/unpublish")
-U1_STATUS="${U1_RESULT%%$'\t'*}"
-U1_LOC="${U1_RESULT#*$'\t'}"
-
-# (a) client sees a 303 to the item path
-if [ "$U1_STATUS" != "303" ]; then
-    red "unpublish: expected status 303, got $U1_STATUS"
-    exit 1
-fi
-green "  ✓ unpublish → 303"
-if [ "$U1_LOC" != "$SUBJECT_PATH" ]; then
-    red "unpublish: expected Location [$SUBJECT_PATH], got [$U1_LOC]"
-    exit 1
-fi
-green "  ✓ unpublish Location = $SUBJECT_PATH"
-
-# (b) daemon logged outbox/delete — id ONLY, line ends right after it (no recipients=)
-assert_log_grep "$LOG" \
-    '^\[info\] outbox/delete id=http://localhost/activities/[0-9a-f]+$' \
-    "delete emission"
-
-# (c) exactly one Delete activity row for the subject, shaped correctly
-assert_sql "$DB" "SELECT count(*) FROM activity WHERE type='Delete' AND object_id='$SUBJECT_URL';" \
-    "1" "one Delete activity for subject"
-assert_sql "$DB" "SELECT actor_id FROM activity WHERE type='Delete' AND object_id='$SUBJECT_URL';" \
-    "$ACTOR_URL" "Delete actor = local actor"
-assert_sql "$DB" "SELECT object_id FROM activity WHERE type='Delete' AND object_id='$SUBJECT_URL';" \
-    "$SUBJECT_URL" "Delete object_id = item id"
-assert_sql "$DB" "SELECT inbox_remote FROM activity WHERE type='Delete' AND object_id='$SUBJECT_URL';" \
-    "0" "Delete is outbound"
-assert_sql "$DB" "SELECT count(*) FROM activity WHERE object_id='$SUBJECT_URL' AND type IN ('Create','Delete');" \
-    "2" "both Create and Delete recorded for subject"
-
-# (c) delivery rows for the Delete == EXACTLY 0; global total still baseline
-DELETE_AID=$(sqlite3 "$DB" \
-    "SELECT id FROM activity WHERE type='Delete' AND object_id='$SUBJECT_URL';")
-assert_sql "$DB" "SELECT count(*) FROM delivery WHERE activity_id='$DELETE_AID';" \
-    "0" "exactly zero deliveries for the Delete activity"
-assert_sql "$DB" "SELECT count(*) FROM delivery;" \
-    "$DEL_BEFORE" "delivery table unchanged across publish+unpublish"
-
-# --- Step U2: item reverted to private AND the row survives -------------
-note "  U2 — item reverted to private; row survives (NO local tombstone)"
-assert_sql "$DB" "SELECT count(*) FROM item WHERE id='$SUBJECT_URL';" \
-    "1" "item row survives unpublish (no local tombstone)"
-assert_sql "$DB" "SELECT privacy FROM item WHERE id='$SUBJECT_URL';" \
-    "private" "subject reverted to private"
-assert_sql "$DB" "SELECT name FROM item WHERE id='$SUBJECT_URL';" \
-    "Private PDF" "item name preserved through unpublish"
-assert_sql "$DB" "SELECT updated_at >= published_at FROM item WHERE id='$SUBJECT_URL';" \
-    "1" "updated_at advanced on unpublish"
-
-# --- Step U3: hidden from anonymous HTTP again, with no leak ------------
-note "  U3 — anon GET 404 (no leak); owner still 200 (authorization, not deletion)"
-assert_status "$SOCK" "$SUBJECT_PATH" 404
-GONE_HTML=$(fetch_html_anon "$SOCK" "$SUBJECT_PATH")
-assert_grep "$GONE_HTML" "no such item" "404 body says no such item"
-if printf '%s' "$GONE_HTML" | grep -q 'Private PDF'; then
-    red "404 page leaked the private item's title"
-    printf '%s\n' "$GONE_HTML" | head -40 >&2
-    exit 1
-fi
-if printf '%s' "$GONE_HTML" | grep -q 'This stays with alice'; then
-    red "404 page leaked the private item's content"
-    printf '%s\n' "$GONE_HTML" | head -40 >&2
-    exit 1
-fi
-green "  ✓ 404 page leaks neither title nor content"
-# owner can still see it — authorization, not deletion
-OWNER_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' \
-    --unix-socket "$SOCK" --cookie "$JAR" "http://x$SUBJECT_PATH")
-if [ "$OWNER_CODE" != "200" ]; then
-    red "owner GET of unpublished item: expected 200, got $OWNER_CODE (row may have been destroyed)"
-    exit 1
-fi
-green "  ✓ owner still sees the private item → 200"
-OWNER_HTML=$(fetch_html "$SOCK" "$JAR" "$SUBJECT_PATH")
-assert_grep "$OWNER_HTML" '/publish" method="post"' "owner sees publish action again (item is private)"
-# (b) read render is pure; assert only that the daemon is still alive
-kill -0 "$DAEMON_PID" || { red "daemon died serving the unpublished item page"; exit 1; }
-green "  ✓ daemon still alive after re-hidden render"
-# (c) re-affirm survival from the DB side after the HTTP round trip
-assert_sql "$DB" "SELECT count(*) FROM item WHERE id='$SUBJECT_URL' AND privacy='private';" \
-    "1" "private item persists after unpublish round-trip"
-
-# --- §5: authorization edge — the owner gate is real --------------------
-note "  AUTH — anonymous publish/unpublish forbidden (403 + 'login required')"
-ANON_PUB_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' \
-    --unix-socket "$SOCK" --request POST --data '' "http://x$SUBJECT_PATH/publish")
-if [ "$ANON_PUB_CODE" != "403" ]; then
-    red "anon publish: expected 403, got $ANON_PUB_CODE (the owner gate did not fire)"
-    exit 1
-fi
-green "  ✓ anon publish → 403"
-ANON_PUB_BODY=$(curl --silent --unix-socket "$SOCK" --request POST --data '' \
-    "http://x$SUBJECT_PATH/publish")
-assert_grep "$ANON_PUB_BODY" "login required" "anon publish refused"
-ANON_UNPUB_BODY=$(curl --silent --unix-socket "$SOCK" --request POST --data '' \
-    "http://x$SUBJECT_PATH/unpublish")
-assert_grep "$ANON_UNPUB_BODY" "login required" "anon unpublish refused"
-# (c) the anon attempts emitted no activities and did not flip privacy
-assert_sql "$DB" "SELECT count(*) FROM activity WHERE object_id='$SUBJECT_URL' AND type IN ('Create','Delete');" \
-    "2" "anon attempts emitted no activities"
-assert_sql "$DB" "SELECT privacy FROM item WHERE id='$SUBJECT_URL';" \
-    "private" "anon publish did not change privacy"
+FAIL_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+    --unix-socket "$FAIL_SOCK" --cookie "$FAIL_JAR" \
+    -F "file=@$PDF_ONE;type=application/pdf" \
+    --form-string "name=Doomed" --form-string "summary=" \
+    --form-string "content=<p>this should never persist</p>" \
+    --form-string "rating=99" --form-string "in_reply_to=" \
+    "http://x/upload")
+case "$FAIL_CODE" in
+    5*) green "  ✓ archive-put failure → $FAIL_CODE (5xx)" ;;
+    *)  red "archive-put failure: expected 5xx, got $FAIL_CODE"; cat "$FAIL_LOG" >&2; exit 1 ;;
+esac
+assert_log_grep "$FAIL_LOG" \
+    '^\[error\] upload/archive-put-failed' \
+    "archive-put failure logged at error"
+FAIL_DB="$FAIL_DATA/annexwyrm.db"
+assert_sql "$FAIL_DB" "SELECT count(*) FROM item WHERE name='Doomed';" \
+    "0" "no item row for the doomed upload"
+assert_sql "$FAIL_DB" "SELECT count(*) FROM activity;" \
+    "0" "no activity (no Create) for the doomed upload"
+kill "$FAIL_PID" 2>/dev/null || true; wait "$FAIL_PID" 2>/dev/null || true
+FAIL_PID=""
 
 green ""
 green "=========================================="
-green "  e2e passed.  data dir: $DATA"
+green "  e2e (socket) passed.  data dir: $DATA"
 green "  daemon log: $LOG"
 green "=========================================="

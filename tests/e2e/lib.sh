@@ -111,15 +111,19 @@ login() {
 }
 
 # Upload a file via multipart/form-data. Args:
-#   sock jar file_path title summary content privacy rating in_reply_to \
-#     remote_kind remote_target remote_label
+#   sock jar file_path title summary content rating in_reply_to [publish_file]
+#
+# There is NO `privacy` field and NO `remote_*` fields in the single-tenant
+# file-publication model. The optional 9th arg, when "1", sends
+# `publish_file=1` so the upload also publishes the file blob (mints + emits
+# the download URL); omitted/empty leaves the file ARCHIVED (default).
 #
 # Returns the redirect target (item path) via stdout.
 upload() {
     local sock="$1" jar="$2" file="$3"
     local title="$4" summary="$5" content="$6"
-    local privacy="$7" rating="$8" in_reply_to="$9"
-    local remote_kind="${10:-}" remote_target="${11:-}" remote_label="${12:-}"
+    local rating="$7" in_reply_to="$8"
+    local publish_file="${9:-}"
 
     # `--form-string` for everything literal — `-F` interprets `<` and `@`
     # as file-read directives, which mangles HTML content and titles.
@@ -128,16 +132,11 @@ upload() {
         --form-string "name=$title"
         --form-string "summary=$summary"
         --form-string "content=$content"
-        --form-string "privacy=$privacy"
         --form-string "rating=$rating"
         --form-string "in_reply_to=$in_reply_to"
     )
-    if [ -n "$remote_target" ]; then
-        form_args+=(
-            --form-string "remote_kind=$remote_kind"
-            --form-string "remote_target=$remote_target"
-            --form-string "remote_label=$remote_label"
-        )
+    if [ "$publish_file" = "1" ]; then
+        form_args+=( --form-string "publish_file=1" )
     fi
 
     # We follow no redirects; the daemon should respond with 303 + Location.
@@ -151,9 +150,12 @@ upload() {
          --output "$tmp_body" \
          "${form_args[@]}" \
          "http://x/upload" >&2
+    # Parse Location with `grep -i` + sed: BSD awk has no working IGNORECASE,
+    # so the old `awk 'BEGIN{IGNORECASE=1}'` silently missed the daemon's
+    # capitalised `Location:` header (matching post_action's approach).
     local loc
-    loc=$(awk 'BEGIN{IGNORECASE=1} /^location:/{$1=""; sub(/^ */,""); print}' \
-            "$tmp_headers" | tr -d '\r')
+    loc=$(grep -i '^location:' "$tmp_headers" | head -1 \
+          | sed -E 's/^[^:]*:[[:space:]]*//' | tr -d '\r')
     if [ -z "$loc" ]; then
         red "upload: no Location header in response"
         yellow "headers:"
@@ -184,12 +186,22 @@ fetch_html_anon() {
          "http://x$path"
 }
 
-# Block until SOCK accepts a connection or TIMEOUT seconds elapse.
+# Block until SOCK accepts an HTTP request or TIMEOUT seconds elapse.
+#
+# We probe with `curl --unix-socket` rather than `nc -U -z`: on macOS,
+# `nc -U -z` reports failure against this daemon's accept socket even when
+# it is fully serving (verified: curl gets 200, nc -z returns 1), so the
+# nc probe spuriously fails the wait. The curl probe is the actual contract
+# the suites care about — "does it answer HTTP?" — so it is also stricter.
 wait_for_socket() {
     local sock="$1" timeout="${2:-5}"
     local elapsed=0
-    while [ "$elapsed" -lt "$timeout" ]; do
-        if [ -S "$sock" ] && nc -U -z "$sock" 2>/dev/null; then
+    # timeout is in seconds; poll at 0.2s, so 5× per second.
+    local ticks=$((timeout * 5))
+    while [ "$elapsed" -lt "$ticks" ]; do
+        if [ -S "$sock" ] && \
+           curl --silent --output /dev/null --max-time 2 \
+                --unix-socket "$sock" "http://x/" >/dev/null 2>&1; then
             return 0
         fi
         sleep 0.2
@@ -312,23 +324,27 @@ fetch_html_anon_tcp() {
 # guess (which varies by platform/libmagic). Defaults to application/pdf,
 # matching this suite's PDFs.
 #
-# Args: jar file_path title summary content privacy rating in_reply_to [type]
-# Sets UPLOAD_LOCATION + UPLOAD_HEADERS.
+# Args: jar file_path title summary content rating in_reply_to [type] [publish_file]
+# Sets UPLOAD_LOCATION + UPLOAD_HEADERS. No `privacy` field (single-tenant);
+# publish_file="1" (the 9th arg) sends publish_file=1 to publish the blob.
 upload_tcp() {
     local jar="$1" file="$2"
     local title="$3" summary="$4" content="$5"
-    local privacy="$6" rating="$7" in_reply_to="$8"
-    local mime="${9:-application/pdf}"
+    local rating="$6" in_reply_to="$7"
+    local mime="${8:-application/pdf}"
+    local publish_file="${9:-}"
 
     local form_args=(
         -F            "file=@$file;type=$mime"
         --form-string "name=$title"
         --form-string "summary=$summary"
         --form-string "content=$content"
-        --form-string "privacy=$privacy"
         --form-string "rating=$rating"
         --form-string "in_reply_to=$in_reply_to"
     )
+    if [ "$publish_file" = "1" ]; then
+        form_args+=( --form-string "publish_file=1" )
+    fi
 
     local tmp_headers tmp_body
     tmp_headers=$(mktemp)

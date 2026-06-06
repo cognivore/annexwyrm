@@ -15,11 +15,13 @@
 #   F2  A's Follow is delivered to B; B auto-accepts and queues an Accept to A.
 #   F3  B's Accept is delivered to A; A's follow row flips to accepted.
 #       → A is now an accepted follower of B as seen from BOTH sides.
-#   F4  B uploads a public item, then publishes it → one Create fanned to A
-#       (recipients=1, the headline proving the whole handshake mattered).
-#   F5  The drain delivers the signed Create to A; A persists the remote
-#       activity (NOT an item row — FINDING 9); delivery goes pending→success
-#       with attempts=0 (retry/backoff never touched — FINDING 7).
+#   F4  B uploads an item (archived) → upload itself fans one Create to A
+#       (recipients=1, the headline proving the whole handshake mattered);
+#       then B publish-files it → one Update (with the download URL) fanned
+#       to A. Two pending deliveries result.
+#   F5  The drain delivers the signed Create AND Update to A; A persists both
+#       remote activities (NOT an item row — FINDING 9); deliveries go
+#       pending→success with attempts=0 (retry/backoff never touched).
 #   F6  Negative controls: dedup (inbox/duplicate) and unsigned rejection (401).
 #
 # TWO TIERS (SPEC §0, FINDING 10):
@@ -402,16 +404,28 @@ start_daemon() {
     # drain (delivers the Follow/Create before we can observe the pending
     # row), making the queue→deliver→success narrative non-deterministic.
     local domain="$1" base="$2" user="$3" instance="$4" sock="$5" data="$6" log="$7"
+    # Hermetic blob backends, one pair per instance, beside the data dir.
+    # rclone treats the plain absolute path as the local backend; the
+    # public-URL seam constructs the federated download URL deterministically.
+    local inst_dir; inst_dir="$(dirname "$data")"
+    local archive="$inst_dir/archive" public="$inst_dir/public"
+    mkdir -p "$archive" "$public"
     ANNEXWYRM_DOMAIN="$domain" \
     ANNEXWYRM_BASE_URL="$base" \
     ANNEXWYRM_USERNAME="$user" \
     ANNEXWYRM_INSTANCE_NAME="$instance" \
     ANNEXWYRM_SOCKET="$sock" \
     ANNEXWYRM_DATA="$data" \
+    ANNEXWYRM_ARCHIVE_REMOTE="$archive" \
+    ANNEXWYRM_PUBLIC_REMOTE="$public" \
+    ANNEXWYRM_PUBLIC_URL_BASE="http://example.test/dl" \
     ANNEXWYRM_SERVE_DRAIN="0" \
         "$BINARY" serve > "$log" 2>&1 &
     echo $!
 }
+# B's blob backends (referenced by the F-archive invariant in F4).
+B_ARCHIVE="$TMP/B/archive"
+B_PUBLIC="$TMP/B/public"
 
 A_DAEMON_PID="$(start_daemon "$A_DOMAIN" "$A_BASE" "$A_USER" "$A_INSTANCE" "$A_SOCK" "$A_DATA" "$A_DAEMON_LOG")"
 B_DAEMON_PID="$(start_daemon "$B_DOMAIN" "$B_BASE" "$B_USER" "$B_INSTANCE" "$B_SOCK" "$B_DATA" "$B_DAEMON_LOG")"
@@ -961,7 +975,6 @@ b_curl --cookie "$B_JAR" \
     --form-string "name=Federated Treatise" \
     --form-string "summary=" \
     --form-string "content=<p>Across the wire.</p>" \
-    --form-string "privacy=public" \
     --form-string "rating=99" \
     --form-string "in_reply_to=" \
     "$B_BASE/upload"
@@ -971,35 +984,24 @@ printf '%s' "$ITEM_PATH" | grep -Eq '^/items/[0-9a-f]+$' \
     || { red "F4: upload Location not /items/<hex>: '$ITEM_PATH'"; cat "$B_UP_HDR" >&2; exit 1; }
 assert_via_caddy "$B_UP_HEADERS" "B upload"
 ITEM_URL="$B_BASE$ITEM_PATH"
+ITEM_SLUG="${ITEM_PATH##*/}"
 note "ITEM_PATH = $ITEM_PATH   ITEM_URL = $ITEM_URL"
 
-# (b) B upload log line.
+# (b) B upload log line — archived (file_published=0), no privacy/remotes.
 assert_log_grep_i "$B_DAEMON_LOG" \
-    "^\[info\] upload/done id=$ITEM_URL size=[0-9]+ remotes=0" \
-    "F4 B: upload/done id=\$ITEM_URL"
+    "^\[info\] upload/done id=$ITEM_URL size=[0-9]+ file_published=0" \
+    "F4 B: upload/done id=\$ITEM_URL file_published=0"
 
-# (a) B publishes the item — this fires emit-create.
-B_PUB_HDR="$TMP/B/publish.headers"
-b_curl --cookie "$B_JAR" --output /dev/null --dump-header "$B_PUB_HDR" \
-    -X POST --data '' "$B_BASE$ITEM_PATH/publish"
-b_pub_status="$(head -1 "$B_PUB_HDR" | awk '{print $2}' | tr -d '\r')"
-[ "$b_pub_status" = "303" ] || { red "F4: publish expected 303, got $b_pub_status"; cat "$B_PUB_HDR" >&2; exit 1; }
-B_PUB_HEADERS="$(cat "$B_PUB_HDR")"
-b_pub_loc="$(header_value "$B_PUB_HEADERS" "location")"
-[ "$b_pub_loc" = "$ITEM_PATH" ] || { red "F4: publish Location expected '$ITEM_PATH', got '$b_pub_loc'"; exit 1; }
-assert_via_caddy "$B_PUB_HEADERS" "B publish"
-green "  ✓ B publish → 303 Location $ITEM_PATH"
-
-# (b) THE HEADLINE: outbox/publish recipients=1 — the Create fanned out to
-#     exactly one inbox (A's), because A is B's only accepted follower. A
-#     regression to recipients=0 fails here loudly (the whole handshake
-#     mattered). SPEC §8 sabotage 2.
+# (b) THE HEADLINE: upload now EMITS the Create, and it fans out to exactly
+#     one inbox (A's), because A is B's only accepted follower. The old model
+#     emitted the Create from a separate POST /publish; the new model emits it
+#     at upload. recipients=1 proves the handshake mattered. SPEC §8 sabotage.
 assert_log_grep_i "$B_DAEMON_LOG" \
     "^\[info\] outbox/publish id=http://127\.0\.0\.1:$B_PORT/activities/[0-9a-f]+ type=Create recipients=1\$" \
-    "F4 B: outbox/publish …type=Create recipients=1 (HEADLINE)"
+    "F4 B: upload emits Create recipients=1 (HEADLINE)"
 
-# (c) SQL — B_DB.
-assert_sql_b "SELECT privacy FROM item WHERE id='$ITEM_URL';" "public" "F4: item is public"
+# (c) SQL — B_DB: item is archived; the upload-time Create is queued to A.
+assert_sql_b "SELECT file_published FROM item WHERE id='$ITEM_URL';" "0" "F4: item archived on upload"
 assert_sql_b "SELECT count(*) FROM activity WHERE type='Create' AND object_id='$ITEM_URL' AND inbox_remote=0;" "1" \
     "F4: exactly one outbound Create for the item"
 CREATE_AID="$(sqlite3 "$B_DB" "SELECT id FROM activity WHERE type='Create' AND object_id='$ITEM_URL' AND inbox_remote=0;")"
@@ -1011,58 +1013,120 @@ assert_sql_b "SELECT raw LIKE '%\"type\":\"Create\"%' AND raw LIKE '%$ITEM_URL%'
     "F4: Create raw embeds the item URL"
 assert_sql_b "SELECT count(*) FROM delivery WHERE activity_id='$CREATE_AID' AND inbox_url='$A_SHARED_INBOX' AND state='pending';" "1" \
     "F4: one Create delivery queued to A's SHARED inbox, pending"
-assert_sql_b "SELECT count(*) FROM delivery WHERE activity_id='$CREATE_AID';" "1" \
-    "F4: exactly one delivery row for the Create"
-assert_sql_b "SELECT sender_id FROM delivery WHERE activity_id='$CREATE_AID';" "$B_ACTOR" \
-    "F4: Create delivery sender_id == \$B_ACTOR"
-assert_sql_b "SELECT attempts FROM delivery WHERE activity_id='$CREATE_AID';" "0" \
-    "F4: Create delivery attempts == 0"
-assert_sql_b "SELECT last_error IS NULL FROM delivery WHERE activity_id='$CREATE_AID';" "1" \
-    "F4: Create delivery last_error is NULL"
 
-# (c) SQL — A_DB: nothing delivered yet.
+# F-archive invariant: an archived blob lands ONLY in B's archive backend;
+# the public backend stays empty until publish-file.
+[ -f "$B_ARCHIVE/$ITEM_SLUG" ] || { red "F4: archived blob missing in B's archive backend"; exit 1; }
+green "  ✓ F4: archived blob present in B's archive backend"
+[ -f "$B_PUBLIC/$ITEM_SLUG" ] && { red "F4: archived blob leaked to B's public backend"; exit 1; }
+green "  ✓ F4: B's public backend empty for the slug (archived)"
+
+# --- B PUBLISHES THE FILE — fires emit-update, which fans out to A too. ----
+note "STEP F4b — B publishes the file (publish-file → Update fanned to A)"
+B_PUB_HDR="$TMP/B/publish.headers"
+b_curl --cookie "$B_JAR" --output /dev/null --dump-header "$B_PUB_HDR" \
+    -X POST --data '' "$B_BASE$ITEM_PATH/publish-file"
+b_pub_status="$(head -1 "$B_PUB_HDR" | awk '{print $2}' | tr -d '\r')"
+[ "$b_pub_status" = "303" ] || { red "F4: publish-file expected 303, got $b_pub_status"; cat "$B_PUB_HDR" >&2; exit 1; }
+B_PUB_HEADERS="$(cat "$B_PUB_HDR")"
+b_pub_loc="$(header_value "$B_PUB_HEADERS" "location")"
+[ "$b_pub_loc" = "$ITEM_PATH" ] || { red "F4: publish-file Location expected '$ITEM_PATH', got '$b_pub_loc'"; exit 1; }
+assert_via_caddy "$B_PUB_HEADERS" "B publish-file"
+green "  ✓ B publish-file → 303 Location $ITEM_PATH"
+
+# (b) publish-file emits an Update, fanned to A (recipients=1).
+assert_log_grep_i "$B_DAEMON_LOG" \
+    "^\[info\] outbox/publish id=http://127\.0\.0\.1:$B_PORT/activities/[0-9a-f]+ type=Update recipients=1\$" \
+    "F4b B: publish-file emits Update recipients=1"
+
+# (c) SQL — B_DB: file_published flipped, one Update whose raw carries the URL.
+assert_sql_b "SELECT file_published FROM item WHERE id='$ITEM_URL';" "1" "F4b: item now file_published=1"
+assert_sql_b "SELECT count(*) FROM activity WHERE type='Update' AND object_id='$ITEM_URL' AND inbox_remote=0;" "1" \
+    "F4b: exactly one outbound Update for the item"
+UPDATE_AID="$(sqlite3 "$B_DB" "SELECT id FROM activity WHERE type='Update' AND object_id='$ITEM_URL' AND inbox_remote=0;")"
+[ -n "$UPDATE_AID" ] || { red "F4b: could not capture UPDATE_AID"; exit 1; }
+note "UPDATE_AID = $UPDATE_AID"
+# The URL must live in the AP object's url[] (an href on a Link), not merely
+# somewhere in the JSON: the compact serializer emits "href":"<url>" with no
+# space (src/core/json.kk json/show), so this anchors the assertion to the
+# url-array structure (§3.4 / prompt: "the url array containing the public URL").
+assert_sql_b "SELECT raw LIKE '%\"href\":\"http://example.test/dl/$ITEM_SLUG\"%' FROM activity WHERE id='$UPDATE_AID';" "1" \
+    "F4b: Update url[] href == the public download URL"
+assert_sql_b "SELECT count(*) FROM delivery WHERE activity_id='$UPDATE_AID' AND inbox_url='$A_SHARED_INBOX' AND state='pending';" "1" \
+    "F4b: one Update delivery queued to A's SHARED inbox, pending"
+
+# F-archive invariant: after publish-file the public backend holds the slug.
+[ -f "$B_PUBLIC/$ITEM_SLUG" ] || { red "F4b: public blob missing after publish-file"; exit 1; }
+green "  ✓ F4b: public blob present in B's public backend after publish-file"
+
+# (c) SQL — A_DB: nothing delivered yet (two deliveries pending on B).
 assert_sql_a "SELECT count(*) FROM activity WHERE object_id='$ITEM_URL';" "0" \
-    "F4: A has not yet received the Create"
+    "F4: A has not yet received the Create or Update"
 
 # ===========================================================================
 #  STEP F5 — the drain delivers the signed Create to A; A persists it
 #  (SPEC §5 F5). The climax: a daemon-driven (Tier 1) signed POST from B's
 #  outbox to A's real inbox.
 # ===========================================================================
-note "STEP F5 — deliver the Create B→A; A persists the remote activity"
+note "STEP F5 — deliver BOTH the Create and the Update B→A; A persists them"
 
 CREATE_BODY="$(sqlite3 "$B_DB" "SELECT raw FROM activity WHERE id='$CREATE_AID';")"
 [ -n "$CREATE_BODY" ] || { red "F5: empty Create body"; exit 1; }
+UPDATE_BODY="$(sqlite3 "$B_DB" "SELECT raw FROM activity WHERE id='$UPDATE_AID';")"
+[ -n "$UPDATE_BODY" ] || { red "F5: empty Update body"; exit 1; }
 
-deliver_and_expect_202 "B" "$CREATE_BODY" "$A_SHARED_INBOX" "$B_KEY" "$B_ACTOR#main-key" \
-    "$A_CADDY_ACCESS_LOG" "/inbox" "1" "$TMP/B/drain.f5.log" \
-    "F5 deliver Create B→A"
+if [ "$TIER" = "1" ]; then
+    # A single drain processes BOTH pending deliveries (Create + Update) in
+    # one batch; the drain reports 2. Both POST to A's /inbox, so the
+    # access-log status check observes the last 202.
+    deliver_and_expect_202 "B" "$CREATE_BODY" "$A_SHARED_INBOX" "$B_KEY" "$B_ACTOR#main-key" \
+        "$A_CADDY_ACCESS_LOG" "/inbox" "2" "$TMP/B/drain.f5.log" \
+        "F5 deliver Create+Update B→A (one drain, 2 rows)"
+else
+    # Tier 0 replays each signed body explicitly (two POSTs).
+    deliver_and_expect_202 "B" "$CREATE_BODY" "$A_SHARED_INBOX" "$B_KEY" "$B_ACTOR#main-key" \
+        "$A_CADDY_ACCESS_LOG" "/inbox" "1" "$TMP/B/drain.f5.create.log" \
+        "F5 deliver Create B→A"
+    deliver_and_expect_202 "B" "$UPDATE_BODY" "$A_SHARED_INBOX" "$B_KEY" "$B_ACTOR#main-key" \
+        "$A_CADDY_ACCESS_LOG" "/inbox" "1" "$TMP/B/drain.f5.update.log" \
+        "F5 deliver Update B→A"
+fi
 
-# (b) A daemon logs: dispatch Create; no inbox/unsigned, no inbox/duplicate.
+# (b) A daemon logs: dispatch Create AND Update; no unsigned, no duplicate.
 assert_log_grep_i "$A_DAEMON_LOG" \
     "^\[info\] inbox/dispatch id=http://127\.0\.0\.1:$B_PORT/activities/[0-9a-f]+ type=Create\$" \
     "F5 A: inbox/dispatch …type=Create"
+assert_log_grep_i "$A_DAEMON_LOG" \
+    "^\[info\] inbox/dispatch id=http://127\.0\.0\.1:$B_PORT/activities/[0-9a-f]+ type=Update\$" \
+    "F5 A: inbox/dispatch …type=Update"
 assert_log_absent "$A_DAEMON_LOG" "inbox/duplicate id=$CREATE_AID" \
     "F5 A: no inbox/duplicate yet (first delivery)"
 
-# (c) SQL — A_DB: A holds the remote activity AND the remote object reference.
+# (c) SQL — A_DB: A holds BOTH remote activities.
 assert_sql_a "SELECT count(*) FROM activity WHERE id='$CREATE_AID' AND inbox_remote=1;" "1" \
     "F5: remote Create landed on A (inbox_remote=1)"
+assert_sql_a "SELECT count(*) FROM activity WHERE type='Update' AND object_id='$ITEM_URL' AND inbox_remote=1;" "1" \
+    "F5: remote Update landed on A (inbox_remote=1)"
 assert_sql_a "SELECT actor_id FROM activity WHERE id='$CREATE_AID';" "$B_ACTOR" \
     "F5: Create actor_id == \$B_ACTOR"
 assert_sql_a "SELECT object_id FROM activity WHERE id='$CREATE_AID';" "$ITEM_URL" \
     "F5: Create object_id == \$ITEM_URL"
 assert_sql_a "SELECT raw LIKE '%$ITEM_URL%' AND raw LIKE '%Federated Treatise%' FROM activity WHERE id='$CREATE_AID';" "1" \
     "F5: full published object body stored in A's activity.raw"
-# FINDING 9: A stores the activity, NOT a remote item row. Asserting an item
-# row would test behavior the code deliberately does not have.
+# A's stored Update carries the download URL in the url[] href (the published
+# blob signal arrived intact over the wire), not merely somewhere in the body.
+assert_sql_a "SELECT raw LIKE '%\"href\":\"http://example.test/dl/$ITEM_SLUG\"%' FROM activity WHERE type='Update' AND object_id='$ITEM_URL' AND inbox_remote=1;" "1" \
+    "F5: A's inbound Update url[] href == the public download URL (over the wire)"
+# FINDING 9 (unchanged): A stores the activity, NOT a remote item row.
 assert_sql_a "SELECT count(*) FROM item WHERE id='$ITEM_URL';" "0" \
     "F5: A creates NO item row for B's object (FINDING 9)"
 
-# (c) SQL — B_DB: delivery pending→success, retry/backoff untouched (FINDING 7).
+# (c) SQL — B_DB: deliveries pending→success, retry/backoff untouched.
 if [ "$TIER" = "1" ]; then
     assert_sql_b "SELECT state FROM delivery WHERE activity_id='$CREATE_AID';" "success" \
         "F5: B's Create delivery → success (Tier 1 daemon POST)"
+    assert_sql_b "SELECT state FROM delivery WHERE activity_id='$UPDATE_AID';" "success" \
+        "F5: B's Update delivery → success (Tier 1 daemon POST)"
 else
     assert_sql_b "SELECT state FROM delivery WHERE activity_id='$CREATE_AID';" "pending" \
         "F5: B's Create delivery still pending (Tier 0 did not transition it)"

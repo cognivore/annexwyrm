@@ -1,6 +1,25 @@
 # SPEC — PUBLISH / UNPUBLISH federation-emission e2e journey for annexwyrm
 
-**File to produce:** the new journey is **appended to `tests/e2e/run.sh`**, after its existing flow (currently ending at the green "e2e passed" banner). Add the steps *before* that banner, or move the banner to the very end. No new files; reuse `tests/e2e/lib.sh` helpers and add small new helpers there only where this spec explicitly calls for one.
+> **⚠️ SUPERSEDED (single-tenant file-publication model).** The product
+> decision retired item-level privacy entirely. The `POST /items/<id>/publish`
+> (privacy flip → `emit-create`) and `POST /items/<id>/unpublish` (privacy flip
+> → `emit-delete`) endpoints this document specifies **no longer exist**. They
+> are replaced by:
+>
+> - **upload always emits `Create`** (the review federates immediately), and
+> - **`POST /items/<id>/publish-file`** which emits an **`Update`** with the
+>   blob's download URL added to the AP `url[]`.
+>
+> The normative spec is now **`tests/e2e/SPEC-file-publication.md`**; the
+> file-publication journey it defines (§4, §7) is what `run.sh` actually
+> implements (Steps A–E) — the publish/unpublish privacy journey below was
+> removed from `run.sh`. The two cross-cutting invariants this document pinned
+> down still hold under the new model and are re-asserted there: (1) a
+> single-actor, no-follower instance queues **exactly 0** deliveries
+> (`recipients=0`); (2) an item row is never locally tombstoned. The text
+> below is retained for the historical rationale of those invariants only.
+
+**File to produce (HISTORICAL — see the notice above):** the journey was **appended to `tests/e2e/run.sh`**, after its existing flow (currently ending at the green "e2e passed" banner). Add the steps *before* that banner, or move the banner to the very end. No new files; reuse `tests/e2e/lib.sh` helpers and add small new helpers there only where this spec explicitly calls for one.
 **Audience:** the engineer who extends the suite.
 **Status of this document:** normative. Every "MUST" is a hard assertion the test is required to make. "If it didn't crash, ship it" is **forbidden**: each step asserts an exact, observable fact — an HTTP status, a specific header, a literal HTML substring, an exact SQL result, or an exact daemon-log line shape. A step that merely runs a command and checks `$? == 0` does not satisfy this spec.
 

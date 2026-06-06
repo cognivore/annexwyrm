@@ -83,6 +83,14 @@ CADDY_RUN_LOG="$TMP/caddy.run.log"
 CADDY_ACCESS_LOG="$TMP/caddy.log"
 JAR="$TMP/cookies"
 
+# Hermetic blob backends (local-backend temp dirs) + the public-URL seam.
+# rclone treats a plain absolute path as the local backend, so real bytes
+# land in these dirs and blob-public-url returns the constructed URL.
+ARCHIVE_REMOTE="$TMP/archive"
+PUBLIC_REMOTE="$TMP/public"
+PUBLIC_URL_BASE="http://example.test/dl"
+mkdir -p "$ARCHIVE_REMOTE" "$PUBLIC_REMOTE"
+
 # Probe two free ephemeral TCP ports on 127.0.0.1: one for the site, one for
 # Caddy's admin endpoint (so we never collide with the user's Caddy admin on
 # :2019). We DO NOT hardcode 80/443/2015/2019.
@@ -312,6 +320,10 @@ ANNEXWYRM_USERNAME="$USERNAME" \
 ANNEXWYRM_INSTANCE_NAME="$INSTANCE_NAME" \
 ANNEXWYRM_SOCKET="$SOCK" \
 ANNEXWYRM_DATA="$DATA" \
+ANNEXWYRM_ARCHIVE_REMOTE="$ARCHIVE_REMOTE" \
+ANNEXWYRM_PUBLIC_REMOTE="$PUBLIC_REMOTE" \
+ANNEXWYRM_PUBLIC_URL_BASE="$PUBLIC_URL_BASE" \
+ANNEXWYRM_SERVE_DRAIN=0 \
     "$BINARY" serve > "$DAEMON_LOG" 2>&1 &
 DAEMON_PID=$!
 
@@ -511,6 +523,41 @@ green "  ✓ wrong password set no session cookie"
 assert_sql "SELECT count(*) FROM session;" "1" "session count unchanged after bad login"
 
 # ===========================================================================
+#  STEP 7b — the upload form (owner session) has NO privacy selector and a
+#  publish_file checkbox (default OFF). The single-tenant file-publication
+#  model retired per-item privacy entirely (§5.1, touchpoint 20): the only
+#  choice on the form is whether to ALSO publish the file blob. We fetch the
+#  form through Caddy with the live session jar (anon GET /upload would 403),
+#  so this also re-proves the proxied path (Via).
+# ===========================================================================
+note "STEP 7b — upload form: no privacy selector, publish_file checkbox present"
+UPLOAD_FORM_HEADERS="$(dump_headers_tcp "/upload" "$JAR")"
+assert_via_caddy "$UPLOAD_FORM_HEADERS" "upload form"
+UPLOAD_FORM_HTML="$(fetch_html_tcp "/upload" "$JAR")"
+# The form renders for the owner (a header/upload chrome marker present).
+assert_grep "$UPLOAD_FORM_HTML" '<form action="/upload" method="post" enctype="multipart/form-data">' \
+    "upload form element"
+# THE assertion: no per-item privacy <select> anywhere on the form. (The
+# rating <select> is fine; it is `name="rating"`, never `name="privacy"`.)
+if printf '%s' "$UPLOAD_FORM_HTML" | grep -Eq 'name="privacy"|<select[^>]*privacy'; then
+    red "upload form still renders a privacy selector — must be gone (§5.1)"
+    printf '%s\n' "$UPLOAD_FORM_HTML" | grep -nE 'privacy' >&2 || true
+    exit 1
+fi
+green "  ✓ upload form has NO privacy selector"
+# And the publish_file checkbox IS present, default OFF (no `checked`).
+assert_grep "$UPLOAD_FORM_HTML" '<input type="checkbox" name="publish_file" value="1">' \
+    "publish_file checkbox present"
+if printf '%s' "$UPLOAD_FORM_HTML" \
+        | grep -E 'name="publish_file"' | grep -qi 'checked'; then
+    red "publish_file checkbox is pre-checked — must default OFF (§5.1)"; exit 1; fi
+green "  ✓ publish_file checkbox defaults OFF (not pre-checked)"
+# No legacy manual-mirror fieldset either (touchpoint 2).
+if printf '%s' "$UPLOAD_FORM_HTML" | grep -Eq 'name="remote_(target|kind|label)"'; then
+    red "upload form still renders the retired manual-mirror fields"; exit 1; fi
+green "  ✓ upload form has no manual-mirror (remote_*) fields"
+
+# ===========================================================================
 #  Generate the two PDFs.
 # ===========================================================================
 note "generating PDFs"
@@ -535,50 +582,84 @@ assert_items_path() {
 # ===========================================================================
 #  STEP 8 — upload the public PDF (multipart through Caddy).
 # ===========================================================================
-note "STEP 8 — upload public PDF"
+note "STEP 8 — upload public PDF (archived; the file is gated, the review is not)"
 upload_tcp "$JAR" "$PDF_PUBLIC" \
     "Public PDF" "" "<p>A document we want everyone to see.</p>" \
-    "public" "99" ""
+    "99" ""
 PUBLIC_PATH="$UPLOAD_LOCATION"
 PUB_UP_HEADERS="$UPLOAD_HEADERS"
+PUBLIC_SLUG="${PUBLIC_PATH##*/}"
 assert_items_path "$PUBLIC_PATH" "public upload"
 # IDENTITY url uses BASE_URL (no port), NOT the transport host:port. (§3.4)
 PUBLIC_URL="${BASE_URL}${PUBLIC_PATH}"
 assert_via_caddy "$PUB_UP_HEADERS" "public upload"
-# (b) log line: body streamed through Caddy intact and was ingested.
-grep -q "upload/done id=${PUBLIC_URL}" "$DAEMON_LOG" || {
-    red "missing 'upload/done id=${PUBLIC_URL}' in daemon log"
+# (b) log line: body streamed through Caddy intact and was ingested. The
+#     shape now carries file_published=0 (archived), not remotes=N.
+grep -Eq "upload/done id=${PUBLIC_URL} size=[0-9]+ file_published=0" "$DAEMON_LOG" || {
+    red "missing 'upload/done id=${PUBLIC_URL} … file_published=0' in daemon log"
     grep 'upload/done' "$DAEMON_LOG" >&2 || true
     exit 1
 }
-green "  ✓ daemon logged upload/done id=$PUBLIC_URL"
-# (c) DB state.
-assert_sql "SELECT count(*) FROM item WHERE privacy='public';" "1" "one public item"
+green "  ✓ daemon logged upload/done id=$PUBLIC_URL file_published=0"
+# (c) DB state — every item is public; the gate is the file blob.
+assert_sql "SELECT count(*) FROM item;" "1" "one item so far"
+assert_sql "SELECT file_published FROM item WHERE name='Public PDF';" "0" \
+    "public PDF is archived (file_published=0)"
 assert_sql "SELECT id FROM item WHERE name='Public PDF';" "$PUBLIC_URL" \
     "public item id == \$PUBLIC_URL"
 assert_sql "SELECT media_type FROM item WHERE name='Public PDF';" "application/pdf" \
     "public item media_type"
 assert_sql "SELECT byte_size > 0 FROM item WHERE name='Public PDF';" "1" \
     "public item byte_size > 0"
+# (c) bytes landed in the archive backend only.
+[ -f "$ARCHIVE_REMOTE/$PUBLIC_SLUG" ] || { red "public PDF archive blob missing"; exit 1; }
+green "  ✓ public PDF archive blob present"
 
 # ===========================================================================
 #  STEP 9 — upload the private PDF.
 # ===========================================================================
-note "STEP 9 — upload private PDF"
+# Formerly the "private" PDF. There is no per-item privacy now: this is just
+# a second archived item whose review is public but whose file is not yet
+# published. (The name is kept for downstream assertions.)
+note "STEP 9 — upload second PDF (archived)"
 upload_tcp "$JAR" "$PDF_PRIVATE" \
-    "Private PDF" "" "<p>This stays with sweater.</p>" \
-    "private" "99" ""
+    "Private PDF" "" "<p>This stays archived for now.</p>" \
+    "99" ""
 PRIVATE_PATH="$UPLOAD_LOCATION"
 PRIV_UP_HEADERS="$UPLOAD_HEADERS"
-assert_items_path "$PRIVATE_PATH" "private upload"
+PRIVATE_SLUG="${PRIVATE_PATH##*/}"
+assert_items_path "$PRIVATE_PATH" "second upload"
 PRIVATE_URL="${BASE_URL}${PRIVATE_PATH}"
-assert_via_caddy "$PRIV_UP_HEADERS" "private upload"
-grep -q "upload/done id=${PRIVATE_URL}" "$DAEMON_LOG" || {
-    red "missing 'upload/done id=${PRIVATE_URL}' in daemon log"; exit 1; }
-green "  ✓ daemon logged upload/done id=$PRIVATE_URL"
-assert_sql "SELECT privacy FROM item WHERE name='Private PDF';" "private" \
-    "private item privacy"
+assert_via_caddy "$PRIV_UP_HEADERS" "second upload"
+grep -Eq "upload/done id=${PRIVATE_URL} size=[0-9]+ file_published=0" "$DAEMON_LOG" || {
+    red "missing 'upload/done id=${PRIVATE_URL} … file_published=0' in daemon log"; exit 1; }
+green "  ✓ daemon logged upload/done id=$PRIVATE_URL file_published=0"
+assert_sql "SELECT file_published FROM item WHERE name='Private PDF';" "0" \
+    "second item is archived (file_published=0)"
 assert_sql "SELECT count(*) FROM item;" "2" "two items total"
+
+# ===========================================================================
+#  STEP 9b — archived item page, OWNER pre-publish (§5.2). The owner viewing
+#  an archived item sees the full review, the "file archived, not published"
+#  line, NO download link, and the publish-file action form (their affordance
+#  to publish later). This is the owner half of "the archived page hides the
+#  download"; N3/Step 15 assert the anon half. We fetch with the live jar.
+# ===========================================================================
+note "STEP 9b — archived item page (owner, pre-publish): no download, publish-file form"
+ARCH_OWNER_HEADERS="$(dump_headers_tcp "$PRIVATE_PATH" "$JAR")"
+assert_status_tcp "$PRIVATE_PATH" 200 "archived item page status (owner)"
+assert_via_caddy "$ARCH_OWNER_HEADERS" "archived item page (owner)"
+ARCH_OWNER_HTML="$(fetch_html_tcp "$PRIVATE_PATH" "$JAR")"
+assert_grep "$ARCH_OWNER_HTML" 'Private PDF' "owner sees the archived item's review"
+assert_grep "$ARCH_OWNER_HTML" 'file archived, not published' \
+    "owner sees the archived file-state line (pre-publish)"
+# The owner gets the publish-file affordance — the form pointing at this item.
+assert_grep "$ARCH_OWNER_HTML" "action=\"/items/$PRIVATE_SLUG/publish-file\" method=\"post\"" \
+    "owner sees the publish-file action form"
+# But NO download link while archived — the file is not yet published.
+if printf '%s' "$ARCH_OWNER_HTML" | grep -q 'class="download"'; then
+    red "archived item page leaked a download anchor to the OWNER pre-publish"; exit 1; fi
+green "  ✓ owner pre-publish: no download anchor on the archived page"
 
 # ===========================================================================
 #  STEP 10 — review of the public PDF, rating +2, non-empty in_reply_to.
@@ -587,7 +668,7 @@ note "STEP 10 — review of public PDF (+2)"
 upload_tcp "$JAR" "$PDF_PUBLIC" \
     "Review: praise public PDF" "" \
     "<p>Praise public PDF. A perfectly reasonable read.</p>" \
-    "public" "2" "$PUBLIC_URL"
+    "2" "$PUBLIC_URL"
 REVIEW_A_PATH="$UPLOAD_LOCATION"
 REV_A_UP_HEADERS="$UPLOAD_HEADERS"
 assert_items_path "$REVIEW_A_PATH" "review A upload"
@@ -607,7 +688,7 @@ note "STEP 11 — review of private PDF (+3) with hyperlink"
 REVIEW_B_CONTENT="<p>Praise private PDF <em>even more</em> — it builds upon the ideas from <a href=\"$PRIVATE_URL\">privatePDF</a>.</p>"
 upload_tcp "$JAR" "$PDF_PRIVATE" \
     "Review: praise private PDF even more" "" "$REVIEW_B_CONTENT" \
-    "public" "3" "$PRIVATE_URL"
+    "3" "$PRIVATE_URL"
 REVIEW_B_PATH="$UPLOAD_LOCATION"
 REV_B_UP_HEADERS="$UPLOAD_HEADERS"
 assert_items_path "$REVIEW_B_PATH" "review B upload"
@@ -677,8 +758,72 @@ assert_grep "$HOME2_HTML" '\[review\]' "home: [review] marker"
 if printf '%s' "$HOME2_HTML" | grep -q 'nothing public yet.'; then
     red "home still shows empty-state but archive is non-empty"; exit 1; fi
 green "  ✓ home no longer shows empty-state"
-# (c) three public items (public PDF + two public reviews).
-assert_sql "SELECT count(*) FROM item WHERE privacy='public';" "3" "three public items"
+# No privacy word ever appears on the home list.
+if printf '%s' "$HOME2_HTML" | grep -qiE 'class="meta">[^<]*· (public|private|unlisted|followers)'; then
+    red "home list still renders a privacy word"; exit 1; fi
+green "  ✓ no privacy word on the home list"
+# (c) every item is public; the home list shows them ALL (no WHERE filter).
+assert_sql "SELECT count(*) FROM item;" "4" "four items total on home"
+
+# ===========================================================================
+#  CADDY STEP N1 — publish-file THROUGH Caddy (owner session, still logged in).
+#  Proves the publish-file Update path works proxied, and the bytes reach the
+#  public backend.
+# ===========================================================================
+note "STEP N1 — publish-file through Caddy"
+N1_HDR="$TMP/n1.headers"
+n1_status=$(caddy_curl --cookie "$JAR" --request POST --data '' \
+    --output /dev/null --dump-header "$N1_HDR" --write-out '%{http_code}' \
+    "${CADDY_BASE}${PUBLIC_PATH}/publish-file")
+[ "$n1_status" = "303" ] || { red "publish-file via Caddy: expected 303, got $n1_status"; exit 1; }
+green "  ✓ publish-file via Caddy → 303"
+N1_HEADERS="$(cat "$N1_HDR")"
+n1_loc="$(header_value "$N1_HEADERS" "location")"
+[ "$n1_loc" = "$PUBLIC_PATH" ] || { red "publish-file Location expected $PUBLIC_PATH, got $n1_loc"; exit 1; }
+green "  ✓ publish-file via Caddy Location = $PUBLIC_PATH"
+assert_via_caddy "$N1_HEADERS" "publish-file"
+# (b) Update emission.
+assert_log_grep "$DAEMON_LOG" \
+    '^\[info\] outbox/publish id='"${BASE_URL}"'/activities/[0-9a-f]+ type=Update recipients=0' \
+    "N1: publish-file emits Update"
+# (c) DB + bytes.
+assert_sql "SELECT file_published FROM item WHERE name='Public PDF';" "1" \
+    "N1: public PDF now file_published=1"
+assert_sql "SELECT file_public_url FROM item WHERE name='Public PDF';" \
+    "http://example.test/dl/$PUBLIC_SLUG" "N1: minted hermetic download URL stored"
+[ -f "$PUBLIC_REMOTE/$PUBLIC_SLUG" ] || { red "N1: public blob missing on disk"; exit 1; }
+green "  ✓ N1: public blob present in the public backend"
+
+# ===========================================================================
+#  CADDY STEP N2 — published item page through Caddy renders the download link.
+# ===========================================================================
+note "STEP N2 — published item page through Caddy"
+N2_HEADERS="$(dump_headers_tcp "$PUBLIC_PATH")"
+assert_status_tcp "$PUBLIC_PATH" 200 "published item page status"
+n2_ct="$(header_value "$N2_HEADERS" "content-type")"
+[ "$n2_ct" = "text/html; charset=utf-8" ] || {
+    red "published page Content-Type expected text/html; charset=utf-8, got '$n2_ct'"; exit 1; }
+green "  ✓ N2: published page Content-Type: $n2_ct"
+assert_via_caddy "$N2_HEADERS" "published item page"
+N2_HTML="$(fetch_html_anon_tcp "$PUBLIC_PATH")"
+assert_grep "$N2_HTML" "class=\"download\" href=\"http://example.test/dl/" "N2: download link rendered"
+assert_grep "$N2_HTML" "A document we want everyone to see" "N2: review body still renders"
+if printf '%s' "$N2_HTML" | grep -q 'file archived, not published'; then
+    red "N2: published page still shows the archived line"; exit 1; fi
+green "  ✓ N2: archived line gone on the published page"
+
+# ===========================================================================
+#  CADDY STEP N3 — archived item page through Caddy hides the download.
+# ===========================================================================
+note "STEP N3 — archived item page through Caddy"
+N3_HEADERS="$(dump_headers_tcp "$PRIVATE_PATH")"
+assert_status_tcp "$PRIVATE_PATH" 200 "archived item page status"
+assert_via_caddy "$N3_HEADERS" "archived item page"
+N3_HTML="$(fetch_html_anon_tcp "$PRIVATE_PATH")"
+assert_grep "$N3_HTML" "file archived, not published" "N3: archived file-state line"
+if printf '%s' "$N3_HTML" | grep -q 'class="download"'; then
+    red "N3: archived page leaked a download anchor"; exit 1; fi
+green "  ✓ N3: no download anchor on the archived page"
 
 # ===========================================================================
 #  STEP 14 — logout clears the cookie and deletes the session.
@@ -717,22 +862,25 @@ UPLOAD_FORBIDDEN="$(fetch_html_tcp "/upload" "$JAR")"
 assert_grep "$UPLOAD_FORBIDDEN" 'login required' "logged-out upload says 'login required'"
 
 # ===========================================================================
-#  STEP 15 — anonymous browsing: public visible (200), private hidden (404).
+#  STEP 15 — anonymous browsing: EVERY item is public (200). There are no
+#  private items; the formerly-"private" item is a public review with an
+#  archived file, so anon sees the review + the archived file-state, no
+#  download link, and no privacy word.
 # ===========================================================================
-note "STEP 15 — anon: public 200, private 404"
-assert_status_tcp "$PUBLIC_PATH" 200 "public item reachable anonymously"
-assert_status_tcp "$PRIVATE_PATH" 404 "private item is 404 to anon (authz, not 403)"
-PRIVATE_ANON_HTML="$(fetch_html_anon_tcp "$PRIVATE_PATH")"
-assert_grep "$PRIVATE_ANON_HTML" 'no such item' "private 404 body says 'no such item'"
-# No information leak.
-if printf '%s' "$PRIVATE_ANON_HTML" | grep -q 'Private PDF'; then
-    red "private 404 page leaks the item name 'Private PDF'"; exit 1; fi
-if printf '%s' "$PRIVATE_ANON_HTML" | grep -q 'This stays with sweater'; then
-    red "private 404 page leaks the private content"; exit 1; fi
-green "  ✓ private 404 leaks neither name nor content"
-# The 404 is an authorization decision, not data loss.
-assert_sql "SELECT count(*) FROM item WHERE privacy='private';" "1" \
-    "private item still exists in DB (404 is authz, not deletion)"
+note "STEP 15 — anon: every item is 200 (no 404-for-private)"
+assert_status_tcp "$PUBLIC_PATH" 200 "published item reachable anonymously"
+assert_status_tcp "$PRIVATE_PATH" 200 "archived item reachable anonymously"
+ARCHIVED_ANON_HTML="$(fetch_html_anon_tcp "$PRIVATE_PATH")"
+assert_grep "$ARCHIVED_ANON_HTML" 'file archived, not published' \
+    "archived item shows the archived file-state to anon"
+assert_grep "$ARCHIVED_ANON_HTML" 'Private PDF' \
+    "archived item renders its title to anon (it is public)"
+if printf '%s' "$ARCHIVED_ANON_HTML" | grep -q 'class="download"'; then
+    red "archived item page leaked a download anchor to anon"; exit 1; fi
+green "  ✓ archived item: no download anchor to anon"
+# The item exists and is archived (file_published=0); no privacy column read.
+assert_sql "SELECT file_published FROM item WHERE name='Private PDF';" "0" \
+    "archived item persists with file_published=0"
 
 # ===========================================================================
 #  Done.
