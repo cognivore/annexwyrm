@@ -13,8 +13,8 @@ pub fun handle-nodeinfo-discovery( req : request ) : <config,div|e> response
 
 pub fun handle-nodeinfo( req : request ) : <db,config,div|e> response
   val total = query("SELECT COUNT(*) FROM actor WHERE local = 1", []).first-int.default(0)
-  val items = query("SELECT COUNT(*) FROM item WHERE privacy IN ('public','followers','unlisted')",
-                    []).first-int.default(0)
+  // Every item is public in the single-tenant model; count them all.
+  val items = query("SELECT COUNT(*) FROM item", []).first-int.default(0)
   val doc = nodeinfo-doc(
     total-users        = total,
     active-month       = total,

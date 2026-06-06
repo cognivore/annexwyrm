@@ -55,11 +55,18 @@ CREATE TABLE IF NOT EXISTS session (
 
 -- The archive. Each row is one piece of content. Bytes live in `remote`
 -- rows (one item, many mirrors); this row is the metadata.
+--
+-- Single-tenant public review site: there is NO per-item privacy. Every
+-- item is always public and federates immediately. The only gate is the
+-- file blob: file_published = 0 (archived, encrypted remote only, no
+-- download link, empty AP url[]) or 1 (also on the public remote, with a
+-- minted download URL that goes in url[]). The old `privacy` column is
+-- DROPPED from this fresh schema; on DBs carried over from the old schema
+-- it is kept-dead (never read/written) — see the migration note below.
 CREATE TABLE IF NOT EXISTS item (
     id              TEXT PRIMARY KEY,           -- https://domain/items/<hex>
     owner_id        TEXT NOT NULL REFERENCES actor(id) ON DELETE CASCADE,
     object_type     TEXT NOT NULL,              -- 'Note'|'Article'|'Document'|'Audio'|'Video'|'Image'
-    privacy         TEXT NOT NULL,              -- 'private'|'unlisted'|'followers'|'public'
     name            TEXT,                       -- title; required for Article
     summary         TEXT,                       -- content-warning / abstract
     content         TEXT,                       -- HTML; NULL for pure-file items
@@ -68,12 +75,23 @@ CREATE TABLE IF NOT EXISTS item (
     sha256          TEXT,                       -- hex
     rating          INTEGER,                    -- -3..3, NULL = unrated (the 7-point Likert scale)
     in_reply_to     TEXT,                       -- AP `inReplyTo`; reviews point at the reviewed item
+    file_published  INTEGER NOT NULL DEFAULT 0, -- 0 = archived (encrypted only); 1 = published (public + url[])
+    file_public_url TEXT,                       -- uc?export=download form; NULL until published
+    file_view_url   TEXT,                       -- open?id viewer mirror; NULL until published
     published_at    TEXT NOT NULL,              -- when first published
     updated_at      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS item_owner_published ON item(owner_id, published_at DESC);
-CREATE INDEX IF NOT EXISTS item_privacy_published ON item(privacy, published_at DESC);
 CREATE INDEX IF NOT EXISTS item_in_reply_to ON item(in_reply_to);
+
+-- Migration for DBs created under the old (privacy) schema. The C bridge
+-- (csrc/db_bridge.c, kk_aw_db_init_schema) probes PRAGMA table_info(item)
+-- and runs these idempotently — DROP COLUMN-free (portable across the
+-- darwin/Ubuntu SQLite versions) and re-runnable as a no-op. The dead
+-- `privacy` column is left in place; nothing reads or writes it.
+--   ALTER TABLE item ADD COLUMN file_published INTEGER NOT NULL DEFAULT 0;
+--   ALTER TABLE item ADD COLUMN file_public_url TEXT;
+--   ALTER TABLE item ADD COLUMN file_view_url TEXT;
 
 -- Remotes / mirrors for an item. Order matters: the first row with
 -- `published = 1` is what we put first in the `url` array.

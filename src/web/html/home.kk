@@ -7,13 +7,13 @@ import web/html/layout
 // One row in the homepage list — built by the handler, rendered here.
 // `rating` carries the unrated sentinel (99) when the item has no rating.
 pub value struct home-row
-  id          : string
-  name        : string
-  kind        : string
-  privacy     : string
-  rating      : int           // -3..3 or 99 = unrated
-  in-reply-to : string        // "" for top-level items
-  published   : string
+  id             : string
+  name           : string
+  kind           : string
+  rating         : int           // -3..3 or 99 = unrated
+  in-reply-to    : string        // "" for top-level items
+  published      : string
+  file-published : bool          // True ⇒ the blob has a public download
 
 pub fun render-home( rows : list<home-row>, instance-name : string ) : string
   val body = ([
@@ -34,12 +34,13 @@ fun items-list( rows : list<home-row> ) : string
 fun item-row( r : home-row ) : string
   val path = "/items/" ++ id-tail(r.id)
   val rev  = if r.in-reply-to == "" then "" else " <span class=\"meta\">[review]</span>"
+  val file = if r.file-published then " <span class=\"meta\">[file]</span>" else ""
   "<li class=\"item-row\">" ++
     "<span class=\"kind\">[" ++ esc(r.kind.to-lower) ++ "]</span> " ++
     row-rating(r.rating) ++
     "<a class=\"title\" href=\"" ++ esc(path) ++ "\">" ++ esc-title(r.name) ++ "</a>" ++
-    rev ++
-    " <span class=\"meta\">" ++ esc(r.published) ++ " · " ++ esc(r.privacy) ++ "</span>" ++
+    rev ++ file ++
+    " <span class=\"meta\">" ++ esc(r.published) ++ "</span>" ++
   "</li>"
 
 fun row-rating( r : int ) : string

@@ -1,4 +1,9 @@
 // annexwyrm/web/html/item — item detail page.
+//
+// Every item is public; the page renders the full review to anyone. The
+// only state that varies is the FILE BLOB: archived (a quiet "file
+// archived, not published" line, plus a publish-file form for the owner)
+// or published (a download link, shown to everyone).
 
 module web/html/item
 
@@ -9,7 +14,7 @@ import annex/item
 import annex/publish
 import web/html/layout
 
-pub fun render-item-page( i : annex-item, likes : int, shares : int ) : div string
+pub fun render-item-page( i : annex-item, likes : int, shares : int, is-owner : bool ) : div string
   val followers = i.owner ++ "/followers"
   val obj = item-to-ap-object(i, followers)
   val jsonld = json/show(ap-object/to-json(obj))
@@ -20,15 +25,13 @@ pub fun render-item-page( i : annex-item, likes : int, shares : int ) : div stri
     "  <h1>" ++ esc(title) ++ rating-badge(i) ++ "</h1>",
     "  <p class=\"meta\">",
     "    <span class=\"kind\">[" ++ esc(i.kind.show.to-lower) ++ "]</span>",
-    "    <span class=\"privacy\">" ++ esc(i.privacy.show) ++ "</span>",
     "    <span class=\"author\">by <a href=\"" ++ esc(i.owner) ++ "\">" ++ esc(i.owner) ++ "</a></span>",
     "    <span class=\"date\">" ++ esc(i.published-at) ++ "</span>",
     "    <span class=\"stats\">" ++ likes.show ++ " likes · " ++ shares.show ++ " shares</span>",
     "  </p>",
     summary-block(i),
     content-block(i),
-    remotes-block(i),
-    actions-block(i),
+    file-state-block(i, is-owner),
     "</article>"
   ]).join("\n")
   layout(title, jsonld, "<a href=\"/items/\">items</a> · " ++ esc(title), body)
@@ -58,37 +61,25 @@ fun content-block( i : annex-item ) : string
   if i.content == "" then ""
   else "  <section class=\"content\">" ++ i.content ++ "</section>"
 
-fun remotes-block( i : annex-item ) : string
-  match i.remotes
-    Nil -> ""
-    _ ->
-      "<section class=\"remotes\">\n" ++
-      "  <h2>mirrors</h2>\n" ++
-      "  <ul>\n" ++
-      i.remotes.map(remote-li).join("\n") ++
-      "\n  </ul>\n" ++
-      "</section>"
-
-fun remote-li( r : item-remote ) : string
-  val flag = if r.published then " published" else ""
-  val label = if r.label == "" then r.target else r.label
-  "    <li class=\"remote " ++ esc(r.kind.show) ++ esc(flag) ++ "\">" ++
-    "<span class=\"rkind\">" ++ esc(r.kind.show) ++ "</span> " ++
-    "<a href=\"" ++ esc(r.target) ++ "\">" ++ esc(label) ++ "</a>" ++
-  "</li>"
-
-fun actions-block( i : annex-item ) : string
+// The file-state block: archived vs published.
+//   * Archived (file-published = False): a quiet no-link state. The owner
+//     additionally gets the publish-file action form; an anonymous visitor
+//     gets only the "file archived, not published" line.
+//   * Published (file-published = True): the download link, shown to all.
+//     No form (one-way for v1).
+fun file-state-block( i : annex-item, is-owner : bool ) : string
   val tail = i.id.split("/").reverse.head.default("")
-  match i.privacy
-    ItPrivate ->
-      "<section class=\"actions\">\n" ++
-      "  <form action=\"/items/" ++ esc(tail) ++ "/publish\" method=\"post\">\n" ++
-      "    <button type=\"submit\">publish</button>\n" ++
-      "  </form>\n" ++
-      "</section>"
-    _ ->
-      "<section class=\"actions\">\n" ++
-      "  <form action=\"/items/" ++ esc(tail) ++ "/unpublish\" method=\"post\">\n" ++
-      "    <button type=\"submit\">unpublish</button>\n" ++
-      "  </form>\n" ++
-      "</section>"
+  if i.file-published then
+    val view = if i.file-view-url == "" || i.file-view-url == i.file-public-url then ""
+               else " <a class=\"view\" href=\"" ++ esc(i.file-view-url) ++
+                    "\" rel=\"nofollow\">view</a>"
+    "  <p class=\"file-state published\">" ++
+      "<a class=\"download\" href=\"" ++ esc(i.file-public-url) ++
+      "\" rel=\"nofollow\">download</a>" ++ view ++ "</p>"
+  else
+    val action =
+      if !is-owner then ""
+      else "\n  <form action=\"/items/" ++ esc(tail) ++ "/publish-file\" method=\"post\">\n" ++
+           "    <button type=\"submit\">publish file</button>\n" ++
+           "  </form>"
+    "  <p class=\"file-state archived\">file archived, not published</p>" ++ action

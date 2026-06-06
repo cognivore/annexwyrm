@@ -156,6 +156,10 @@ fun cmd-serve() : io ()
   val h = kk-db-open(db-path)
   if h < 0 then println("could not open db: " ++ db-path)
   else
+    // Apply schema + idempotent migration on open too, so a daemon started
+    // against a DB created under the old (privacy) schema gains the
+    // file-publication columns without a separate `init`.
+    apply-schema(h)
     with with-sqlite-db(h)
     val socket-path = env-or-socket()
     val fd = kk-aw-listen(socket-path)

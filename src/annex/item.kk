@@ -26,22 +26,30 @@ pub value struct item-remote
 //
 // `in-reply-to` is the AP `inReplyTo` URL; non-empty marks this item as
 // a review of another item (which may live on another server).
+// `file-published` is the ONLY blob gate (the item itself is always
+// public): 0 = archived (encrypted remote only, no download link, nothing
+// in the AP url[]); 1 = published (also on the public remote, download URL
+// minted + federated). `file-public-url` is the uc?export=download form
+// (the primary url[] entry + rendered link); `file-view-url` is the
+// open?id viewer mirror. Both "" while archived.
 pub value struct annex-item
-  id           : url
-  owner        : url
-  kind         : object-kind
-  privacy      : privacy
-  name         : string         // title; required for Article, optional elsewhere
-  summary      : string         // optional content warning / abstract
-  content      : string         // body HTML; "" for pure-file items
-  media-type   : string         // for Document family; ""
-  byte-size    : int            // 0 = unknown
-  sha256-hex   : string         // "" = unknown
-  rating       : int            // -3..3, or `rating-unrated` (99) for absent
-  in-reply-to  : url            // "" for top-level items; the AP id of the parent for reviews
-  published-at : iso-time
-  updated-at   : iso-time
-  remotes      : list<item-remote>
+  id              : url
+  owner           : url
+  kind            : object-kind
+  name            : string         // title; required for Article, optional elsewhere
+  summary         : string         // optional content warning / abstract
+  content         : string         // body HTML; "" for pure-file items
+  media-type      : string         // for Document family; ""
+  byte-size       : int            // 0 = unknown
+  sha256-hex      : string         // "" = unknown
+  rating          : int            // -3..3, or `rating-unrated` (99) for absent
+  in-reply-to     : url            // "" for top-level items; the AP id of the parent for reviews
+  file-published  : bool           // False = archived; True = public download
+  file-public-url : url            // uc?export=download form; "" while archived
+  file-view-url   : url            // open?id viewer mirror; "" while archived
+  published-at    : iso-time
+  updated-at      : iso-time
+  remotes         : list<item-remote>
 
 // Sentinel meaning "no rating".  -3..+3 is the actual scale.
 pub val rating-unrated : int = 99
@@ -75,16 +83,12 @@ pub fun rating-stars( r : int ) : string
 pub fun annex-item/is-review( i : annex-item ) : bool
   i.in-reply-to != ""
 
-// True iff the item is currently federated (publishable / discoverable).
+// Every item is always federated: a single-tenant public review site has
+// no private items. (The blob — not the review — is what publish-file
+// gates, via `file-published`.) Kept as a predicate so callers that asked
+// "should this federate?" still read cleanly; it is now a constant True.
 pub fun annex-item/is-federated( i : annex-item ) : bool
-  i.privacy.federates
-
-// The mirrors that should appear in the AP `url` field.
-pub fun annex-item/published-remotes( i : annex-item ) : list<item-remote>
-  i.remotes.filter(fn(r) r.published).sort-on-order
-
-fun sort-on-order( xs : list<item-remote> ) : list<item-remote>
-  xs   // SQL provides the order; we don't re-sort here
+  True
 
 // Smart constructor for a freshly-ingested item with no remotes yet.
 pub fun fresh-item(
@@ -98,21 +102,23 @@ pub fun fresh-item(
     now          : iso-time
   ) : annex-item
   Annex-item(
-    id           = id,
-    owner        = owner,
-    kind         = kind,
-    privacy      = ItPrivate,
-    name         = name,
-    summary      = "",
-    content      = "",
-    media-type   = media-type,
-    byte-size    = byte-size,
-    sha256-hex   = sha256-hex,
-    rating       = rating-unrated,
-    in-reply-to  = "",
-    published-at = now,
-    updated-at   = now,
-    remotes      = []
+    id              = id,
+    owner           = owner,
+    kind            = kind,
+    name            = name,
+    summary         = "",
+    content         = "",
+    media-type      = media-type,
+    byte-size       = byte-size,
+    sha256-hex      = sha256-hex,
+    rating          = rating-unrated,
+    in-reply-to     = "",
+    file-published  = False,
+    file-public-url = "",
+    file-view-url   = "",
+    published-at    = now,
+    updated-at      = now,
+    remotes         = []
   )
 
 // Smart constructor for a fresh remote row attached to an item.

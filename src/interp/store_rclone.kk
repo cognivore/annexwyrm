@@ -8,8 +8,9 @@ module interp/store_rclone
 
 import effects/store
 import effects/shell
+import effects/config
 
-pub fun with-rclone-store( action : () -> <store,shell|e> a ) : <shell|e> a
+pub fun with-rclone-store( action : () -> <store,shell,config|e> a ) : <shell,config|e> a
   with handler
     fun blob-put(loc : blob-loc, bytes : string)
       val _ = run(["rclone", "rcat", loc.show], bytes)
@@ -28,11 +29,19 @@ pub fun with-rclone-store( action : () -> <store,shell|e> a ) : <shell|e> a
       if !r.ok then Nothing
       else extract-size(r.stdout)
     fun blob-public-url(loc : blob-loc)
-      val r = run(["rclone", "link", loc.show], "")
-      if !r.ok then Nothing
+      // The hermetic test seam (and any S3-style remote behind a CDN): when
+      // ANNEXWYRM_PUBLIC_URL_BASE is set, construct a deterministic URL from
+      // the blob key instead of asking rclone. `rclone link` returns Nothing
+      // for a local-backend path, so the temp-dir e2e suites cannot mint a
+      // URL there; this base makes the publish PIPELINE assertable offline.
+      val base = get-public-url-base()
+      if base != "" then Just(base ++ "/" ++ loc.key)
       else
-        val u = r.stdout.trim
-        if u == "" then Nothing else Just(u)
+        val r = run(["rclone", "link", loc.show], "")
+        if !r.ok then Nothing
+        else
+          val u = r.stdout.trim
+          if u == "" then Nothing else Just(u)
   action()
 
 // Extract the numeric "bytes": <n> from rclone's size --json output.

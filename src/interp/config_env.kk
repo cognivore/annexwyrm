@@ -18,6 +18,13 @@ pub fun with-env-config( action : () -> <config,ndet|e> a ) : <ndet|e> a
   val username    = env-or-default("ANNEXWYRM_USERNAME",  "alice")
   val manual      = env-or-default("ANNEXWYRM_MANUAL_APPROVE", "0") != "0"
   val name        = env-or-default("ANNEXWYRM_INSTANCE_NAME", "annexwyrm")
+  val archive-rem = env-or-default("ANNEXWYRM_ARCHIVE_REMOTE", "gdrive-crypt:annexwyrm")
+  val public-rem  = env-or-default("ANNEXWYRM_PUBLIC_REMOTE",  "gdrive:annexwyrm-public")
+  // No env-or-default: an EMPTY base must stay empty (the "use rclone link"
+  // sentinel). env-or-default would not help anyway — the default IS "".
+  val url-base    = match get-env-value("ANNEXWYRM_PUBLIC_URL_BASE")
+                      Just(v) -> v
+                      Nothing -> ""
   with handler
     fun get-domain()             domain
     fun get-base-url()           base-url
@@ -25,6 +32,9 @@ pub fun with-env-config( action : () -> <config,ndet|e> a ) : <ndet|e> a
     fun get-local-username()     username
     fun get-manually-approves()  manual
     fun get-instance-name()      name
+    fun get-archive-remote()     archive-rem
+    fun get-public-remote()      public-rem
+    fun get-public-url-base()    url-base
   action()
 
 fun env-or-default( key : string, dflt : string ) : ndet string

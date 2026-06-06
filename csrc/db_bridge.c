@@ -254,13 +254,14 @@ static const char ANNEXWYRM_SCHEMA[] =
   "CREATE TABLE IF NOT EXISTS item ("
   "  id TEXT PRIMARY KEY,"
   "  owner_id TEXT NOT NULL REFERENCES actor(id) ON DELETE CASCADE,"
-  "  object_type TEXT NOT NULL, privacy TEXT NOT NULL,"
+  "  object_type TEXT NOT NULL,"
   "  name TEXT, summary TEXT, content TEXT, media_type TEXT,"
   "  byte_size INTEGER, sha256 TEXT,"
   "  rating INTEGER, in_reply_to TEXT,"
+  "  file_published INTEGER NOT NULL DEFAULT 0,"
+  "  file_public_url TEXT, file_view_url TEXT,"
   "  published_at TEXT NOT NULL, updated_at TEXT NOT NULL);"
   "CREATE INDEX IF NOT EXISTS item_owner_published ON item(owner_id, published_at DESC);"
-  "CREATE INDEX IF NOT EXISTS item_privacy_published ON item(privacy, published_at DESC);"
   "CREATE INDEX IF NOT EXISTS item_in_reply_to ON item(in_reply_to);"
   "CREATE TABLE IF NOT EXISTS item_remote ("
   "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -306,11 +307,74 @@ static const char ANNEXWYRM_SCHEMA[] =
   "  key TEXT PRIMARY KEY, value TEXT NOT NULL);"
 ;
 
+/* Idempotent column-add migration for the `item` table. SQLite has no
+ * "ADD COLUMN IF NOT EXISTS", and ADD COLUMN on an existing column is an
+ * error, so we probe PRAGMA table_info(item) first. This is DROP COLUMN-
+ * free (DROP COLUMN needs SQLite >= 3.35, not guaranteed across the
+ * darwin/Ubuntu build matrix) and re-runnable as a no-op: a fresh `init`
+ * already has the three columns and the probe short-circuits every ADD.
+ *
+ * The dead `privacy` column (if present on a carried-over DB) is left
+ * untouched — no code reads or writes it anymore.
+ */
+static int aw_item_has_column(sqlite3* db, const char* col) {
+  sqlite3_stmt* st = NULL;
+  int found = 0;
+  if (sqlite3_prepare_v2(db, "PRAGMA table_info(item);", -1, &st, NULL) != SQLITE_OK) {
+    return 0;
+  }
+  while (sqlite3_step(st) == SQLITE_ROW) {
+    const unsigned char* name = sqlite3_column_text(st, 1); /* col 1 = name */
+    if (name && strcmp((const char*)name, col) == 0) { found = 1; break; }
+  }
+  sqlite3_finalize(st);
+  return found;
+}
+
+static int aw_migrate_item(sqlite3* db) {
+  /* The table may not exist yet on a brand-new DB if the schema exec
+   * failed; in that case the schema rc already reported the failure and we
+   * leave the probe alone (table_info returns no rows → has_column false →
+   * we'd try to ALTER a missing table, which errors). Guard on existence. */
+  if (!aw_item_has_column(db, "id")) {
+    return SQLITE_OK; /* no item table (or empty) — nothing to migrate */
+  }
+  int rc = SQLITE_OK;
+  if (!aw_item_has_column(db, "file_published")) {
+    rc = sqlite3_exec(db,
+      "ALTER TABLE item ADD COLUMN file_published INTEGER NOT NULL DEFAULT 0;",
+      NULL, NULL, NULL);
+    if (rc != SQLITE_OK) return rc;
+  }
+  if (!aw_item_has_column(db, "file_public_url")) {
+    rc = sqlite3_exec(db,
+      "ALTER TABLE item ADD COLUMN file_public_url TEXT;",
+      NULL, NULL, NULL);
+    if (rc != SQLITE_OK) return rc;
+  }
+  if (!aw_item_has_column(db, "file_view_url")) {
+    rc = sqlite3_exec(db,
+      "ALTER TABLE item ADD COLUMN file_view_url TEXT;",
+      NULL, NULL, NULL);
+    if (rc != SQLITE_OK) return rc;
+  }
+  return SQLITE_OK;
+}
+
 kk_integer_t kk_aw_db_init_schema(kk_integer_t h_i, kk_context_t* ctx) {
   int h = (int)kk_integer_clamp32(h_i, ctx);
   int rc = SQLITE_ERROR;
   if (h > 0 && h < MAX_HANDLES && g_handles[h]) {
     rc = sqlite3_exec(g_handles[h], ANNEXWYRM_SCHEMA, NULL, NULL, NULL);
+    /* Run the migration even if the schema batch errored: aw_migrate_item
+     * is a no-op when the item table is missing (existence-guarded), and
+     * an unrelated schema-batch failure must not silently skip the column
+     * adds — the daemon would then surface "no such column" at runtime
+     * instead of the real error. The schema rc stays the reported result. */
+    {
+      int mrc = aw_migrate_item(g_handles[h]);
+      if (rc == SQLITE_OK) rc = mrc;
+    }
   }
   return kk_integer_from_int(rc, ctx);
 }

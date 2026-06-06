@@ -1,4 +1,4 @@
-// annexwyrm/web/handler/item — GET /items/<id> + POST /items/<id>/publish etc.
+// annexwyrm/web/handler/item — GET /items/<id> + POST /items/<id>/publish-file.
 
 module web/handler/item
 
@@ -9,6 +9,7 @@ import effects/time
 import effects/rng
 import effects/log
 import effects/config
+import effects/store
 import ap/object
 import ap/outbox
 import annex/item
@@ -16,63 +17,120 @@ import annex/publish
 import web/server
 import web/html/item
 
+// Every item is always public: the review renders to ANYONE. There is no
+// owner-only item view and no 404-for-private branch — the only thing that
+// is gated is the file blob, and that is reflected on the page (archived vs
+// published download link), not in the route's authorization.
 pub fun handle-item( req : request, id : string )
   : <db,config,div|e> response
   val full-id = get-base-url() ++ "/items/" ++ id
   match load-item(full-id)
     Nothing -> not-found("no such item")
     Just(it) ->
-      if it.privacy.show == "private" && !is-owner-session(req) then
-        not-found("no such item")
-      elif prefers-jsonld(req) then
+      if prefers-jsonld(req) then
         val followers = it.owner ++ "/followers"
         val obj = item-to-ap-object(it, followers)
         ok-jsonld(json/show(ap-object/to-json(obj)))
       else
         val likes = count-likes(full-id)
         val shares = count-shares(full-id)
-        ok-html(render-item-page(it, likes, shares))
+        val owner = is-owner-session(req)
+        ok-html(render-item-page(it, likes, shares, owner))
 
-pub fun handle-item-publish( req : request, id : string )
-  : <db,time,rng,log,config,div|e> response
+// POST /items/<id>/publish-file — open the archived file to the public.
+// Owner-gated, idempotent, and one-way for v1: it copies the blob to the
+// public remote, mints + stores the download URL, and emits an Update.
+pub fun handle-item-publish-file( req : request, id : string )
+  : <db,time,rng,log,config,store,div|e> response
   if !is-owner-session(req) then forbidden("login required")
   else
     val full-id = get-base-url() ++ "/items/" ++ id
     match load-item(full-id)
       Nothing -> not-found("no such item")
       Just(it) ->
-        val privacy-str = "public"   // default; could be a form field
-        val target = privacy/parse(privacy-str).default(ItPublic)
+        // Idempotent: a second publish-file is a harmless no-op, NOT a
+        // double Update. Re-posting just redirects to the item.
+        if it.file-published then
+          see-other("/items/" ++ id)
+        else
+          val slug = id-tail(full-id)
+          // The bytes are not in memory; fetch them back from the archive.
+          match blob-get(Blob-loc(get-archive-remote(), slug))
+            Nothing ->
+              error("publish-file/archive-get-failed",
+                [("remote", get-archive-remote()), ("slug", slug)])
+              server-error("publish-file failed: could not read archived blob")
+            Just(bytes) ->
+              if publish-file-blob(it, slug, bytes) then
+                see-other("/items/" ++ id)
+              else
+                server-error("public put failed: blob could not be published to " ++
+                             get-public-remote())
+
+// ----------------------------------------------------------------------
+//  The publish-file body — shared by upload-with-publish_file and the
+//  later /publish-file action.
+//
+//  Returns True on success, False on a verified failure (the caller turns
+//  False into a 5xx and leaves the file archived). Per koka#654, this
+//  effectful body NEVER returns the freshly-built `annex-item` value
+//  struct; a pure builder makes it and `ship-published-item` consumes it
+//  as a PARAMETER and returns () (mirroring ap/outbox's emit-*/ship-*).
+//
+//  Bytes are a parameter so the upload-inline case uses f.body directly
+//  and the later action uses the bytes read back from the archive.
+// ----------------------------------------------------------------------
+pub fun publish-file-blob( it : annex-item, slug : string, bytes : string )
+  : <db,time,rng,log,config,store,div|e> bool
+  val public-loc = Blob-loc(get-public-remote(), slug)
+  blob-put(public-loc, bytes)
+  if !blob-has(public-loc) then
+    error("publish-file/public-put-failed",
+      [("remote", get-public-remote()), ("slug", slug)])
+    False
+  else
+    match blob-public-url(public-loc)
+      Nothing ->
+        error("publish-file/link-mint-failed",
+          [("remote", get-public-remote()), ("slug", slug)])
+        False
+      Just(view) ->
         val now = now-iso()
-        val published = publish-item(it, target, now)
-        save-item(published)
-        emit-create(published)
-        see-other("/items/" ++ id)
+        val pub-target = get-public-remote() ++ "/" ++ slug
+        ship-published-item(build-published-item(it, pub-target, view, now))
+        True
 
-pub fun handle-item-unpublish( req : request, id : string )
-  : <db,time,rng,log,config,div|e> response
-  if !is-owner-session(req) then forbidden("login required")
-  else
-    val full-id = get-base-url() ++ "/items/" ++ id
-    match load-item(full-id)
-      Nothing -> not-found("no such item")
-      Just(it) ->
-        emit-delete(it)
-        val now = now-iso()
-        val unpub = unpublish-item(it, now)
-        save-item(unpub)
-        see-other("/items/" ++ id)
+// Pure: build the published item value struct (no effects → no mlift, so
+// koka#654's value-struct-in-lambda panic cannot fire here). `pub-target`
+// is the public mirror's rclone target, threaded in so this stays total.
+fun build-published-item( it : annex-item, pub-target : string, view : url, now : iso-time )
+  : annex-item
+  val (public-url, view-url) = derive-url-forms(view)
+  val public-remote = Item-remote(
+    RkRclone, pub-target, it.media-type,
+    "public download", True, 1
+  )
+  publish-file-item(it, public-url, view-url, now, it.remotes ++ [public-remote])
 
-pub fun handle-item-update( req : request, id : string )
-  : <db,time,rng,log,config,div|e> response
-  if !is-owner-session(req) then forbidden("login required")
-  else
-    val full-id = get-base-url() ++ "/items/" ++ id
-    match load-item(full-id)
-      Nothing -> not-found("no such item")
-      Just(it) ->
-        emit-update(it)
-        see-other("/items/" ++ id)
+// Effectful tail: persist + federate an already-built item. The item is a
+// PARAMETER (not a local capture), and this returns () — exactly the shape
+// that keeps koka#654's mlift-capture panic clear.
+fun ship-published-item( it : annex-item )
+  : <db,time,rng,log,config,div|e> ()
+  save-item(it)
+  emit-update(it)
+
+// Derive the (download, viewer) URL pair from rclone's minted link.
+// gdrive: "https://drive.google.com/open?id=<ID>" → the download form is
+// "https://drive.google.com/uc?export=download&id=<ID>", the viewer stays.
+// Anything else (the hermetic constructed URL): both forms equal `view`.
+fun derive-url-forms( view : url ) : (url, url)
+  match view.find("open?id=")
+    Nothing -> (view, view)
+    Just(slc) ->
+      val gid = slc.after.string
+      val dl = "https://drive.google.com/uc?export=download&id=" ++ gid
+      (dl, view)
 
 // ----------------------------------------------------------------------
 //  DB helpers
@@ -80,10 +138,12 @@ pub fun handle-item-update( req : request, id : string )
 
 pub fun load-item( id : url ) : db maybe<annex-item>
   val rows = query(
-    "SELECT id, owner_id, object_type, privacy, COALESCE(name,''), " ++
+    "SELECT id, owner_id, object_type, COALESCE(name,''), " ++
     "COALESCE(summary,''), COALESCE(content,''), COALESCE(media_type,''), " ++
     "COALESCE(byte_size,0), COALESCE(sha256,''), " ++
     "COALESCE(rating, 99), COALESCE(in_reply_to, ''), " ++
+    "COALESCE(file_published,0), COALESCE(file_public_url,''), " ++
+    "COALESCE(file_view_url,''), " ++
     "published_at, updated_at " ++
     "FROM item WHERE id = ?",
     [txt(id)]
@@ -93,21 +153,23 @@ pub fun load-item( id : url ) : db maybe<annex-item>
     Cons(r, _) ->
       val rrs = load-remotes(id)
       Just(Annex-item(
-        id           = text(r.col(0)),
-        owner        = text(r.col(1)),
-        kind         = object-kind/parse(text(r.col(2))).default(OkDocument),
-        privacy      = privacy/parse(text(r.col(3))).default(ItPrivate),
-        name         = text(r.col(4)),
-        summary      = text(r.col(5)),
-        content      = text(r.col(6)),
-        media-type   = text(r.col(7)),
-        byte-size    = int(r.col(8)),
-        sha256-hex   = text(r.col(9)),
-        rating       = clamp-rating(int(r.col(10))),
-        in-reply-to  = text(r.col(11)),
-        published-at = text(r.col(12)),
-        updated-at   = text(r.col(13)),
-        remotes      = rrs
+        id              = text(r.col(0)),
+        owner           = text(r.col(1)),
+        kind            = object-kind/parse(text(r.col(2))).default(OkDocument),
+        name            = text(r.col(3)),
+        summary         = text(r.col(4)),
+        content         = text(r.col(5)),
+        media-type      = text(r.col(6)),
+        byte-size       = int(r.col(7)),
+        sha256-hex      = text(r.col(8)),
+        rating          = clamp-rating(int(r.col(9))),
+        in-reply-to     = text(r.col(10)),
+        file-published  = int(r.col(11)) != 0,
+        file-public-url = text(r.col(12)),
+        file-view-url   = text(r.col(13)),
+        published-at    = text(r.col(14)),
+        updated-at      = text(r.col(15)),
+        remotes         = rrs
       ))
 
 fun load-remotes( item-id : url ) : db list<item-remote>
@@ -128,14 +190,17 @@ fun load-remotes( item-id : url ) : db list<item-remote>
 pub fun save-item( i : annex-item ) : db ()
   val _ = exec(
     "INSERT OR REPLACE INTO item " ++
-    "(id, owner_id, object_type, privacy, name, summary, content, " ++
+    "(id, owner_id, object_type, name, summary, content, " ++
     "media_type, byte_size, sha256, rating, in_reply_to, " ++
+    "file_published, file_public_url, file_view_url, " ++
     "published_at, updated_at) " ++
-    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-    [txt(i.id), txt(i.owner), txt(i.kind.show), txt(i.privacy.show),
+    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    [txt(i.id), txt(i.owner), txt(i.kind.show),
      txt(i.name), txt(i.summary), txt(i.content), txt(i.media-type),
      num(i.byte-size), txt(i.sha256-hex),
      rating-cell(i.rating), reply-cell(i.in-reply-to),
+     num(if i.file-published then 1 else 0),
+     url-cell(i.file-public-url), url-cell(i.file-view-url),
      txt(i.published-at), txt(i.updated-at)]
   )
   val _ = exec("DELETE FROM item_remote WHERE item_id = ?", [txt(i.id)])
@@ -158,6 +223,14 @@ fun rating-cell( r : int ) : sql-value
 
 fun reply-cell( s : string ) : sql-value
   if s == "" then SqlNull else SqlText(s)
+
+// NULL out an empty file URL (archived items have no minted URL).
+fun url-cell( s : string ) : sql-value
+  if s == "" then SqlNull else SqlText(s)
+
+// Last path segment of a full item URL. "http://x/items/abc" → "abc".
+pub fun id-tail( id : url ) : string
+  id.split("/").reverse.head.default(id)
 
 fun count-likes( object-id : url ) : db int
   query("SELECT COUNT(*) FROM like_ WHERE object_id = ?", [txt(object-id)])

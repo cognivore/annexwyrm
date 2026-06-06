@@ -19,9 +19,11 @@ pub fun remote-to-link( r : item-remote, item-mediatype : string ) : ap-link
     rel        = link-rel-for(r.kind)
   )
 
-// Convert all *published* remotes of an item into the AP url[] payload.
-pub fun item-published-links( i : annex-item ) : list<ap-link>
-  i.published-remotes.map(fn(r) remote-to-link(r, i.media-type))
+// NOTE: the AP `url[]` is no longer built from `item_remote` rows. Under
+// the single-tenant file-publication model it is derived purely from the
+// item's `file-published` / `file-public-url` / `file-view-url` state —
+// see `annex/publish` `file-publication-links`. `remote-to-link` is kept
+// for the (out-of-scope) multi-mirror future and the inbound-AP path.
 
 // ----------------------------------------------------------------------
 //  Per-kind URL/href shaping

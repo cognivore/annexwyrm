@@ -14,16 +14,21 @@ module effects/store
 // local-disk staging area".
 pub alias remote-handle = string
 
-// A blob location: (remote, key-within-remote). The key is opaque to the
-// effect; rclone stores it as a path, git-annex hashes it, IPFS uses
-// the CID. Algorithms never construct these directly; they obtain them
-// from the AnnexItem record.
+// A blob location: (remote, key-within-remote). `remote` is the FULL
+// rclone remote+prefix as configured (e.g. "gdrive-crypt:annexwyrm", or a
+// plain absolute path like "/tmp/archive" which rclone treats as the local
+// backend) — it already carries its own ":" scheme separator if any. `key`
+// is the per-blob path segment (the item slug). The on-disk / on-remote
+// location is therefore `<remote>/<key>`.
 pub value struct blob-loc
   remote : remote-handle
   key    : string
 
+// The rclone path for this blob. We join with "/" (NOT ":") because the
+// remote already includes its scheme: "gdrive:bucket" + "/" + "slug" =
+// "gdrive:bucket/slug"; "/tmp/archive" + "/" + "slug" = "/tmp/archive/slug".
 pub fun blob-loc/show( b : blob-loc ) : string
-  if b.remote == "" then b.key else b.remote ++ ":" ++ b.key
+  if b.remote == "" then b.key else b.remote ++ "/" ++ b.key
 
 pub effect store
   // Upload bytes to `loc`. Overwrites if it already exists.

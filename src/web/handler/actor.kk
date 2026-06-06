@@ -60,11 +60,11 @@ fun text( v : sql-value ) : string
 fun int-bool( v : sql-value ) : bool
   match v { SqlInt(n) -> n != 0; _ -> False }
 
-// Up to 10 most recent public items for the profile sidebar.
+// Up to 10 most recent items for the profile sidebar. Every item is public
+// in the single-tenant model, so there is no privacy filter.
 fun recent-items() : db list<recent-row>
   val rows = query(
     "SELECT id, name, object_type, published_at FROM item " ++
-    "WHERE privacy IN ('public','followers','unlisted') " ++
     "ORDER BY published_at DESC LIMIT 10",
     []
   )

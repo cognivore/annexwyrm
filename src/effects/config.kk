@@ -26,3 +26,19 @@ pub effect config
 
   // The user-friendly name of the instance, e.g. "Alice's archive".
   fun get-instance-name() : string
+
+  // rclone remote+prefix the upload ALWAYS copies the blob to — the
+  // encrypted archive. Default "gdrive-crypt:annexwyrm". The e2e suites
+  // point this at a temp dir (rclone treats a plain absolute path as the
+  // local backend) to assert the pipeline hermetically.
+  fun get-archive-remote() : string
+
+  // rclone remote+prefix publish-file additionally copies the blob to —
+  // the public download mirror. Default "gdrive:annexwyrm-public".
+  fun get-public-remote() : string
+
+  // The public-URL test seam. When non-empty, `blob-public-url` returns
+  // `<base>/<key>` instead of shelling out to `rclone link` (which returns
+  // Nothing for local paths). Default "" ⇒ use `rclone link` (the real
+  // gdrive path).
+  fun get-public-url-base() : string
