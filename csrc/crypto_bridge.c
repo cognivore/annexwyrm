@@ -247,7 +247,11 @@ kk_integer_t kk_aw_argon2id_verify(kk_string_t phc, kk_string_t password,
       char b64salt[64], b64hash[128];
       if (sscanf(phc_s, "$pbkdf2-sha256$i=%d$%63[^$]$%127s",
                  &iters, b64salt, b64hash) == 3) {
-        uint8_t salt[64], hash[64], chk[64];
+        /* EVP_DecodeBlock writes 3*ceil(inlen/4) bytes — up to ~96 for the
+         * 127-char b64hash and ~48 for the 63-char b64salt. The output
+         * buffers MUST cover that BEFORE the decode (the old hash[64] was a
+         * stack overflow; the length check ran only afterwards). */
+        uint8_t salt[128], hash[128], chk[128];
         int saltlen = EVP_DecodeBlock(salt, (const unsigned char*)b64salt,
                                        (int)strlen(b64salt));
         int hashlen = EVP_DecodeBlock(hash, (const unsigned char*)b64hash,

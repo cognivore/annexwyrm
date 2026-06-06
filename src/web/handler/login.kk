@@ -45,14 +45,24 @@ pub fun handle-login-post( req : request )
           val tok = rand-hex(32)
           val now = now-iso()
           val expiry = iso-from-unix(now-unix() + 60 * 60 * 24 * 14) // 14d
+          // Rotate: drop any prior sessions for this actor before minting a
+          // new one, so a fresh login invalidates older tokens (a stolen or
+          // stale cookie does not outlive the next login).
+          val _ = exec("DELETE FROM session WHERE actor_id = ?", [txt(aid)])
           exec(
             "INSERT INTO session (token, actor_id, created_at, expires_at) " ++
             "VALUES (?,?,?,?)",
             [txt(tok), txt(aid), txt(now), txt(expiry)]
           )
           val resp = see-other("/")
+          // SameSite=Strict (not Lax): the session cookie authorises only
+          // owner mutations (upload/edit/publish/follow/logout); it never
+          // needs to ride a cross-site request. Strict means no browser
+          // attaches it to ANY cross-origin request, closing the CSRF gap
+          // that Lax leaves open for cross-site POSTs. HttpOnly keeps it
+          // out of JS; Secure (HTTPS only) is added on the public site.
           resp.with-header("Set-Cookie",
-            "session=" ++ tok ++ "; Path=/; HttpOnly; SameSite=Lax; Max-Age=1209600"
+            "session=" ++ tok ++ "; Path=/; HttpOnly; SameSite=Strict; Max-Age=1209600"
             ++ secure-attr(req))
 
 pub fun handle-logout( req : request )
@@ -63,7 +73,7 @@ pub fun handle-logout( req : request )
     ()
   val resp = see-other("/")
   resp.with-header("Set-Cookie",
-    "session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0" ++ secure-attr(req))
+    "session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0" ++ secure-attr(req))
 
 // ----------------------------------------------------------------------
 //  Form-encoded body parsing (application/x-www-form-urlencoded)

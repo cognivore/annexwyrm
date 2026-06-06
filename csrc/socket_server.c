@@ -28,12 +28,27 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <sys/time.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <poll.h>
+
+/* Per-connection receive timeout (seconds). Bounds slowloris: a peer that
+ * opens a connection and then trickles (or never finishes) the request must
+ * not be able to pin the single-threaded serve loop forever. Each read()
+ * that blocks longer than this fails with EAGAIN and we abandon the
+ * connection. Generous enough for a real 64 MiB upload over a slow link. */
+#define RECV_TIMEOUT_SECS 30
+
+static void set_recv_timeout(int fd) {
+  struct timeval tv;
+  tv.tv_sec = RECV_TIMEOUT_SECS;
+  tv.tv_usec = 0;
+  setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+}
 
 /* 64 MiB request cap. The proxy in front (Caddy/nginx) enforces its own
  * limit; this is the daemon's in-memory backstop. Voice notes and most
@@ -143,8 +158,14 @@ kk_unit_t kk_aw_close(kk_integer_t fd_i, kk_context_t* ctx) {
 }
 
 /* Read until the buffer contains "\r\n\r\n"; returns offset just past
- * that sequence, or -1 on error/EOF without finding it. */
+ * that sequence, or -1 on error/EOF/timeout without finding it.
+ *
+ * `scanned` tracks how far we have already searched so each read() only
+ * scans the newly-arrived bytes (minus a 3-byte overlap for a split
+ * terminator) instead of rescanning the whole buffer — O(n) total rather
+ * than O(n^2), which matters when a peer dribbles headers toward the cap. */
 static ssize_t read_until_double_crlf(int fd, char** buf, size_t* len, size_t* cap) {
+  size_t scanned = 0;
   while (1) {
     if (*len + 4096 > *cap) {
       size_t newcap = *cap ? *cap * 2 : 8192;
@@ -157,17 +178,20 @@ static ssize_t read_until_double_crlf(int fd, char** buf, size_t* len, size_t* c
     ssize_t r = read(fd, *buf + *len, *cap - *len);
     if (r <= 0) {
       if (r < 0 && errno == EINTR) continue;
-      return -1;
+      return -1;   /* EOF, error, or SO_RCVTIMEO (EAGAIN) — abandon. */
     }
     *len += (size_t)r;
-    /* Look for \r\n\r\n at the tail. */
+    /* Resume scanning a few bytes before the previous end so a terminator
+     * split across two reads is still caught. */
     if (*len >= 4) {
       const char* p = *buf;
-      for (size_t i = 0; i + 3 < *len; ++i) {
+      size_t i = scanned > 3 ? scanned - 3 : 0;
+      for (; i + 3 < *len; ++i) {
         if (p[i] == '\r' && p[i+1] == '\n' && p[i+2] == '\r' && p[i+3] == '\n') {
           return (ssize_t)(i + 4);
         }
       }
+      scanned = *len;
     }
     if (*len >= MAX_REQ_BYTES) return -1;
   }
@@ -249,6 +273,10 @@ static size_t copy_no_us(char* dst, size_t pos, const char* src, size_t n) {
 kk_string_t kk_aw_read_request(kk_integer_t conn_i, kk_context_t* ctx) {
   int conn = (int)kk_integer_clamp32(conn_i, ctx);
   if (conn < 0) return aw_str_empty(ctx);
+
+  /* Bound how long a single slow/stalled peer can hold this connection
+   * (and thus the single serve thread) — see set_recv_timeout. */
+  set_recv_timeout(conn);
 
   char* buf = NULL;
   size_t len = 0, cap = 0;

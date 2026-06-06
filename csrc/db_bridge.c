@@ -61,12 +61,37 @@ kk_unit_t kk_aw_db_close(kk_integer_t h_i, kk_context_t* ctx) {
   return kk_Unit;
 }
 
+/* Reverse db_sqlite.kk's db-escape: 0x1D<X> → the original control byte.
+ * Writes into `out` (caller-owned, at least `len` bytes — unescaping only
+ * ever shrinks). Returns the unescaped length. */
+static size_t db_unescape(const char* in, size_t len, char* out) {
+  size_t o = 0;
+  for (size_t i = 0; i < len; ++i) {
+    if (in[i] == 0x1D && i + 1 < len) {
+      char e = in[++i];
+      out[o++] = e == 'D' ? 0x1D : e == 'E' ? 0x1E : e == 'F' ? 0x1F
+               : e == 'T' ? 0x09 : e;
+    } else {
+      out[o++] = in[i];
+    }
+  }
+  return o;
+}
+
 /* Bind a single tag/value pair to position `pos` of `stmt`.
- * Returns 1 on success. */
+ * Returns 1 on success. Text values arrive byte-stuffed; unescape first. */
 static int bind_one(sqlite3_stmt* stmt, int pos, char tag, const char* val, size_t len) {
   switch (tag) {
     case 'n': return sqlite3_bind_null(stmt, pos) == SQLITE_OK;
-    case 't': return sqlite3_bind_text(stmt, pos, val, (int)len, SQLITE_TRANSIENT) == SQLITE_OK;
+    case 't': {
+      char stackbuf[1024];
+      char* dec = len <= sizeof(stackbuf) ? stackbuf : (char*)malloc(len ? len : 1);
+      if (!dec) return 0;
+      size_t dlen = db_unescape(val, len, dec);
+      int ok = sqlite3_bind_text(stmt, pos, dec, (int)dlen, SQLITE_TRANSIENT) == SQLITE_OK;
+      if (dec != stackbuf) free(dec);
+      return ok;
+    }
     case 'i': {
       long long n = strtoll(val, NULL, 10);
       return sqlite3_bind_int64(stmt, pos, n) == SQLITE_OK;
@@ -147,6 +172,27 @@ static int buf_puts(char** buf, size_t* len, size_t* cap, const char* s, size_t 
   return 1;
 }
 
+/* Emit a text column value byte-stuffed (mirror of db_sqlite.kk's db-escape)
+ * so a stored value containing 0x1E/0x1F/0x1D/TAB cannot collide with the
+ * row/col separators and desync the Koka-side parser on read-back. */
+static int buf_put_escaped(char** buf, size_t* len, size_t* cap, const char* s, size_t n) {
+  for (size_t i = 0; i < n; ++i) {
+    unsigned char c = (unsigned char)s[i];
+    char e = 0;
+    if (c == 0x1D) e = 'D';
+    else if (c == 0x1E) e = 'E';
+    else if (c == 0x1F) e = 'F';
+    else if (c == 0x09) e = 'T';
+    if (e) {
+      if (!buf_putc(buf, len, cap, 0x1D)) return 0;
+      if (!buf_putc(buf, len, cap, e)) return 0;
+    } else {
+      if (!buf_putc(buf, len, cap, (char)c)) return 0;
+    }
+  }
+  return 1;
+}
+
 kk_string_t kk_aw_db_query(kk_integer_t h_i, kk_string_t sql,
                            kk_string_t params, kk_context_t* ctx) {
   int h = (int)kk_integer_clamp32(h_i, ctx);
@@ -181,7 +227,7 @@ kk_string_t kk_aw_db_query(kk_integer_t h_i, kk_string_t sql,
               buf_puts(&buf, &blen, &bcap, "t\t", 2);
               const unsigned char* v = sqlite3_column_text(stmt, c);
               int n = sqlite3_column_bytes(stmt, c);
-              if (v && n > 0) buf_puts(&buf, &blen, &bcap, (const char*)v, (size_t)n);
+              if (v && n > 0) buf_put_escaped(&buf, &blen, &bcap, (const char*)v, (size_t)n);
             }
           }
         }

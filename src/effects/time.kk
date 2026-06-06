@@ -14,6 +14,9 @@ pub effect time
   fun now-http() : string
   fun now-unix() : int
   fun iso-from-unix( epoch : int ) : iso-time
+  // Parse an RFC 7231 HTTP-date to Unix seconds, or -1 on failure. Used to
+  // enforce a freshness window on signed inbound activities (anti-replay).
+  fun parse-http-date( http : string ) : int
 
 // Add `seconds` to a Unix timestamp. Pure; no effect required. Useful
 // for scheduling: `delivery.next-attempt = now-unix().add-seconds(60).iso`.

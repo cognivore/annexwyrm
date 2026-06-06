@@ -473,7 +473,7 @@ fi
 green "  ✓ Set-Cookie sets a session token"
 assert_grep "$SET_COOKIE" 'HttpOnly' "cookie HttpOnly"
 assert_grep "$SET_COOKIE" 'Path=/' "cookie Path=/"
-assert_grep "$SET_COOKIE" 'SameSite=Lax' "cookie SameSite=Lax"
+assert_grep "$SET_COOKIE" 'SameSite=Strict' "cookie SameSite=Strict (CSRF hardening)"
 assert_grep "$SET_COOKIE" 'Max-Age=1209600' "cookie Max-Age=1209600"
 # THE bug-#6 assertion: NO Secure attribute over http://.
 if printf '%s' "$SET_COOKIE" | grep -qi 'secure'; then
@@ -851,7 +851,7 @@ assert_grep "$LOGOUT_COOKIE" 'session=;' "logout cookie session= empty"
 assert_grep "$LOGOUT_COOKIE" 'Max-Age=0' "logout cookie Max-Age=0"
 assert_grep "$LOGOUT_COOKIE" 'Path=/' "logout cookie Path=/"
 assert_grep "$LOGOUT_COOKIE" 'HttpOnly' "logout cookie HttpOnly"
-assert_grep "$LOGOUT_COOKIE" 'SameSite=Lax' "logout cookie SameSite=Lax"
+assert_grep "$LOGOUT_COOKIE" 'SameSite=Strict' "logout cookie SameSite=Strict"
 if printf '%s' "$LOGOUT_COOKIE" | grep -qi 'secure'; then
     red "logout Set-Cookie carries 'Secure' over http://: $LOGOUT_COOKIE"; exit 1; fi
 green "  ✓ logout cookie has NO Secure attribute"

@@ -24,10 +24,14 @@ extern kk-now-unix() : ndet int
 extern kk-iso-from-unix( epoch : int ) : ndet string
   c "kk_aw_iso_from_unix"
 
+extern kk-parse-http-date( http : string ) : ndet int
+  c "kk_aw_parse_http_date"
+
 pub fun with-real-time( action : () -> <time,ndet|e> a ) : <ndet|e> a
   with handler
     fun now-iso()             kk-now-iso()
     fun now-http()            kk-now-http()
     fun now-unix()            kk-now-unix()
     fun iso-from-unix(u : int) kk-iso-from-unix(u)
+    fun parse-http-date(h : string) kk-parse-http-date(h)
   action()

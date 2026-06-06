@@ -920,6 +920,24 @@ curl --silent --output /dev/null --unix-socket "$SOCK" --cookie "$JAR" \
 assert_sql "$DB" "SELECT in_reply_to FROM item WHERE id='$ENC_URL';" \
     "$QURL" "review-of URL with query '=' is not truncated"
 
+# (d) DB param/result FRAMING: a stored text value containing the framing-
+#     significant control bytes (TAB 0x09, 0x1E, 0x1F) must round-trip
+#     byte-exact through the param encode (db-escape) → C bind → SQLite → C
+#     query (escape) → parse-cell (db-unescape). Pre-fix, a raw 0x1E in a
+#     value truncated/shifted the binds. Send them percent-encoded; read back
+#     and compare with a hexdump so control bytes are visible.
+CTRL_CONTENT="A%09B%1eC%1fD-end"   # A<TAB>B<0x1E>C<0x1F>D-end
+curl --silent --output /dev/null --unix-socket "$SOCK" --cookie "$JAR" \
+     --data-urlencode "name=ctl" --data-urlencode "summary=" \
+     --data "content=$CTRL_CONTENT" --data-urlencode "rating=2" \
+     --data-urlencode "in_reply_to=" \
+     "http://x/items/$ENC_SLUG/edit"
+GOT_HEX=$(sqlite3 "$DB" "SELECT hex(content) FROM item WHERE id='$ENC_URL';")
+WANT_HEX="4109421E431F442D656E64"   # "A\tB\x1eC\x1fD-end"
+[ "$GOT_HEX" = "$WANT_HEX" ] \
+    && green "  ✓ control bytes (TAB/0x1E/0x1F) round-trip byte-exact through the DB framing" \
+    || { red "DB framing corrupted control bytes: got $GOT_HEX want $WANT_HEX"; exit 1; }
+
 # ===========================================================================
 #  Step M — edit a PUBLISHED review. The first real prod review is published
 #  (a download link is live), and editing it must keep the file published

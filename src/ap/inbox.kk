@@ -107,16 +107,20 @@ fun auto-accept-follow( follow : ap-activity, now : iso-time )
     queue-delivery(accept-id, inbox-url)
 
 fun handle-accept( a : ap-activity ) : <db,time,log|e> maybe<string>
-  // The remote actor accepted a Follow we sent. Promote that pending
-  // row to `accepted`.
+  // The remote actor accepted a Follow we sent. Promote that pending row to
+  // `accepted` — but ONLY a follow we sent to THIS actor (target_id =
+  // a.actor). Without that scope a peer could Accept-spoof a follow id it
+  // does not own and flip arbitrary follow rows. (a.actor is already bound
+  // to the signing key by verify-signature.)
   val inner-id = inner-activity-id(a.object)
   if inner-id == "" then
     Just("Accept did not reference a Follow id")
   else
     val now = now-iso()
     exec(
-      "UPDATE follow SET state = ?, accepted_at = ? WHERE id = ? AND state = ?",
-      [txt("accepted"), txt(now), txt(inner-id), txt("pending")]
+      "UPDATE follow SET state = ?, accepted_at = ? " ++
+      "WHERE id = ? AND state = ? AND target_id = ?",
+      [txt("accepted"), txt(now), txt(inner-id), txt("pending"), txt(a.actor)]
     )
     Nothing
 
@@ -126,8 +130,8 @@ fun handle-reject( a : ap-activity ) : <db,log|e> maybe<string>
     Just("Reject did not reference a Follow id")
   else
     exec(
-      "UPDATE follow SET state = ? WHERE id = ?",
-      [txt("rejected"), txt(inner-id)]
+      "UPDATE follow SET state = ? WHERE id = ? AND target_id = ?",
+      [txt("rejected"), txt(inner-id), txt(a.actor)]
     )
     Nothing
 
@@ -160,18 +164,26 @@ fun handle-remove( a : ap-activity ) : <log|e> maybe<string>
   Nothing
 
 fun handle-undo( a : ap-activity ) : <db,log|e> maybe<string>
+  // Every Undo deletes only rows OWNED by the actor doing the undo
+  // (actor_id / follower_id = a.actor). Without that scope a peer could
+  // Undo any follow/like/announce row by id — an IDOR letting one peer
+  // strip another's relationships. a.actor is bound to the signing key by
+  // verify-signature, so this is a true ownership check.
   val inner-type = a.object-type
   val inner-id = inner-activity-id(a.object)
   if inner-id == "" then
     Just("Undo did not reference an activity id")
   elif inner-type == "Follow" then
-    exec("DELETE FROM follow WHERE id = ?", [txt(inner-id)])
+    exec("DELETE FROM follow WHERE id = ? AND follower_id = ?",
+         [txt(inner-id), txt(a.actor)])
     Nothing
   elif inner-type == "Like" then
-    exec("DELETE FROM like_ WHERE id = ?", [txt(inner-id)])
+    exec("DELETE FROM like_ WHERE id = ? AND actor_id = ?",
+         [txt(inner-id), txt(a.actor)])
     Nothing
   elif inner-type == "Announce" then
-    exec("DELETE FROM announce WHERE id = ?", [txt(inner-id)])
+    exec("DELETE FROM announce WHERE id = ? AND actor_id = ?",
+         [txt(inner-id), txt(a.actor)])
     Nothing
   else
     info("inbox/undo: unknown inner type", [("type", inner-type)])

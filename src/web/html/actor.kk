@@ -21,7 +21,7 @@ pub fun render-actor-page( a : ap-actor, recents : list<recent-row> ) : div stri
     "<section class=\"actor\">",
     "  <h1>" ++ esc(title) ++
        " <small class=\"handle\">@" ++ esc(a.preferred-username) ++ "</small></h1>",
-    "  <p class=\"summary\">" ++ a.summary ++ "</p>",
+    "  <p class=\"summary\">" ++ esc(a.summary) ++ "</p>",
     "  <dl class=\"actor-meta\">",
     "    <dt>id</dt><dd>" ++ "<a href=\"" ++ esc(a.id) ++ "\">" ++ esc(a.id) ++ "</a></dd>",
     "    <dt>inbox</dt><dd>" ++ esc(a.inbox) ++ "</dd>",

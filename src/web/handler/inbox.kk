@@ -10,6 +10,7 @@ module web/handler/inbox
 
 import core/types
 import core/json
+import core/url
 import effects/db
 import effects/time
 import effects/rng
@@ -83,12 +84,88 @@ fun verify-signature( req : request, act : ap-activity )
         Just(parsed) ->
           // The keyId is normally "<actor>#main-key"; strip the fragment.
           val actor-id = parsed.key-id.split("#").head.default("")
-          val attempt-first = try-with(actor-id, False, req, parsed)
-          if attempt-first then True
+          // CRITICAL: bind the signing key to the activity's actor. The
+          // signature only proves possession of the key behind `keyId`; it
+          // says NOTHING about who `act.actor` claims to be. Without this
+          // check any peer with any valid keypair signs as themselves while
+          // putting actor="<victim>" in the body — full impersonation
+          // (forged Create/Update/Delete/Follow/Undo as the local owner or
+          // anyone else). Require the keyId's actor to BE the activity actor.
+          if !same-actor(actor-id, act.actor) then
+            warn("inbox/keyid-actor-mismatch",
+              [("key-actor", actor-id), ("activity-actor", act.actor)])
+            False
+          // The activity id must share an origin with its actor. Otherwise a
+          // peer (signing legitimately as itself) could submit an activity
+          // whose id lives on ANOTHER server's domain, pre-seeding the
+          // dedup table to suppress that server's real activity (id-based
+          // dedup poisoning).
+          elif !same-origin(act.id, act.actor) then
+            warn("inbox/id-actor-origin-mismatch",
+              [("id", act.id), ("actor", act.actor)])
+            False
+          // The signed-header set is attacker-chosen. A near-empty set (or
+          // one omitting `digest`) means the body — the entire activity — is
+          // unauthenticated even though the request "is signed". Require a
+          // minimum set that covers the request line, host, date, and the
+          // body digest (inbox is always POST-with-body).
+          elif !covers-required(parsed.headers) then
+            warn("inbox/insufficient-signed-headers",
+              [("signed", parsed.headers.join(" "))])
+            False
+          // The signed Date must be recent. Without a freshness window a
+          // captured signed POST replays forever; the window (±12h, generous
+          // for clock skew) plus id-dedup bounds replay to a no-op.
+          elif !date-fresh(req.header("date").default("")) then
+            warn("inbox/stale-or-missing-date",
+              [("date", req.header("date").default(""))])
+            False
           else
-            // Try once more with a forced re-fetch in case the actor
-            // rotated keys.
-            try-with(actor-id, True, req, parsed)
+            val attempt-first = try-with(actor-id, False, req, parsed)
+            if attempt-first then True
+            else
+              // Try once more with a forced re-fetch in case the actor
+              // rotated keys.
+              try-with(actor-id, True, req, parsed)
+
+// True iff two actor URLs denote the same actor (exact match modulo a
+// single trailing slash). Empty never matches.
+fun same-actor( a : url, b : url ) : bool
+  a != "" && b != "" && norm-actor(a) == norm-actor(b)
+
+fun norm-actor( s : string ) : string
+  match s.ends-with("/")
+    Just(slc) -> slc.string
+    Nothing   -> s
+
+// True iff two URLs share scheme + authority (host[:port]).
+fun same-origin( a : url, b : url ) : bool
+  match (url-parse(a), url-parse(b))
+    (Just(ua), Just(ub)) -> ua.scheme == ub.scheme && ua.authority == ub.authority
+    _ -> False
+
+// Freshness window for a signed inbound Date header: ±12h (clock-skew
+// tolerant; replay beyond this is rejected). Empty/unparseable ⇒ not fresh.
+val date-skew-secs : int = 43200
+
+fun date-fresh( http-date : string ) : <time|e> bool
+  if http-date == "" then False
+  else
+    val t = parse-http-date(http-date)
+    if t < 0 then False
+    else
+      val delta = now-unix() - t
+      (if delta < 0 then 0 - delta else delta) <= date-skew-secs
+
+// The minimum signed-header set for an inbound POST: the request line, the
+// host, a date, and the body digest. All four must be present (the digest
+// itself is then matched against the body in verify-inbound).
+val required-signed-headers : list<string>
+  = ["(request-target)", "host", "date", "digest"]
+
+fun covers-required( signed : list<string> ) : bool
+  val low = signed.map(fn(h) h.to-lower)
+  required-signed-headers.all(fn(r) low.any(fn(h) h == r))
 
 fun try-with( actor-id : url, refresh : bool, req : request, parsed : parsed-sig )
   : <db,time,fetch,log,crypto,div|e> bool

@@ -226,3 +226,60 @@ the edit form is the first path to send rich user text through query-parse
   struct, SELECT it in load-remotes, set it in fresh-remote, and write
   r.created-at in save-remote. Touches the positional Item-remote literals
   in upload.kk and publish.kk; keep them positional (koka#654).
+
+## Security audit (2026-06-06) — fixes + standing follow-ups
+
+A full adversarial audit (9 dimensions, double-verified) ran against the
+whole codebase. Fixed in this pass:
+
+ActivityPub S2S (the internet-facing inbox):
+- **keyId↔actor binding** (was CRITICAL: full impersonation). verify-signature
+  now rejects unless the keyId's actor == the activity actor (same-actor),
+  and the activity id shares an origin with the actor (same-origin — blocks
+  id-dedup poisoning). src/web/handler/inbox.kk.
+- **Required digest + minimum signed-header set** — an inbound POST must sign
+  (request-target) host date digest, so the body can't be unauthenticated.
+- **Anti-replay** — the signed Date must be within ±12h (parse-http-date,
+  csrc/time_bridge.c). Replays outside the window are rejected.
+- **IDOR** — Undo/Accept/Reject DELETE/UPDATE are scoped to the acting actor
+  (follower_id/actor_id/target_id = a.actor), not just the inner id.
+- **SSRF egress filter** — curl is restricted to http/https and a sockopt
+  callback rejects loopback/private/link-local/CGNAT/ULA targets (covers the
+  inbox keyId fetch AND delivery). Test seam: ANNEXWYRM_ALLOW_PRIVATE_EGRESS=1
+  (e2e only — NEVER prod). csrc/curl_bridge.c.
+- **curl response cap** 8 MiB (egress memory DoS).
+
+DoS / parsing:
+- **JSON depth guard** (max 64) pre-scans before the recursive parser, on the
+  unauthenticated inbox path. src/core/json.kk.
+- **Socket recv timeout** (30s) + O(n) header scan — slowloris can't pin the
+  single serve thread. csrc/socket_server.c.
+
+DB / memory:
+- **0x1E/0x1F/TAB byte-stuffing** in the SQLite param + result framing — a
+  remote AP field with a control byte no longer truncates/shifts binds or
+  desyncs result parsing. src/interp/db_sqlite.kk + csrc/db_bridge.c.
+- **PBKDF2-fallback stack overflow** fixed (decode buffers sized before the
+  decode). csrc/crypto_bridge.c. (Only reachable on -DANNEXWYRM_NO_ARGON2.)
+- **memcpy(NULL,0)** UB guarded in proc_bridge.c.
+
+Web:
+- **SameSite=Strict** session cookie + **session rotation** on login (drops
+  prior sessions). **actor summary escaped** (remote-controlled → was raw).
+
+Prod edge (nginx, not in the binary): limit_req on /login and /inbox, and
+client_max_body_size aligned to the daemon's 64 MiB cap. See deploy.sh notes.
+
+Regression tests: federation F7.1 (forged actor → 401), F7.2 (stale-Date
+replay → 401), F7.3 (JSON depth-bomb → 400, daemon survives); socket Step L
+(control-byte DB round-trip, byte-exact hex).
+
+### Standing follow-ups (low priority, accepted for now)
+- exec()/query() return -1 on bind/SQLITE_BUSY is not surfaced to callers.
+  Root cause (0x1E binds) is fixed and busy_timeout=5000 covers contention;
+  a typed Result on the db effect would make the rest loud. [[]]
+- Login username enumeration via argon2 timing — MOOT here: the single tenant
+  username is public. Left as-is.
+- Cleartext ANNEXWYRM_PASSWORD in the serve process env (only init needs it);
+  rageveil protects it at rest. A nix-module change could unset it before
+  exec serve.

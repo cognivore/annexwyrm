@@ -177,7 +177,9 @@ kk_string_t kk_aw_spawn(kk_string_t argv_s, kk_string_t stdin_s,
     for (size_t k = 0; k < se.len; ++k)
       if (se.data[k] != 0x1F) result[pos++] = se.data[k];
     result[pos++] = 0x1F;
-    memcpy(result + pos, so.data, so.len); pos += so.len;
+    /* so.data is NULL when the child wrote no stdout (e.g. rclone rcat);
+     * memcpy(dst, NULL, 0) is UB, so guard it. */
+    if (so.len) { memcpy(result + pos, so.data, so.len); pos += so.len; }
     out_s = aw_str_from_bytes((uint8_t*)result, pos, ctx);
     free(result);
   } else {

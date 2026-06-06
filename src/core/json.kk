@@ -192,8 +192,37 @@ fun hex-char( n : int ) : char
 // ----------------------------------------------------------------------
 
 // Top-level parse. Returns Nothing on malformed input or trailing junk.
+// Maximum nesting depth we will parse. The recursive-descent parser
+// recurses once per `[`/`{`, so unbounded nesting on the UNAUTHENTICATED
+// inbox path (json-parse runs before signature verification) would overflow
+// the native stack — a trivial remote crash. 64 is far deeper than any real
+// ActivityPub document.
+val max-json-depth : int = 64
+
 pub fun json-parse( s : string ) : div maybe<json>
-  parse-eof(s.slice, parse-value).maybe
+  if too-deep(s.slice, 0, False, False) then Nothing
+  else parse-eof(s.slice, parse-value).maybe
+
+// Iterative (no recursion-on-the-value-tree) pre-scan that bails as soon as
+// bracket nesting exceeds max-json-depth. String-aware so brackets inside
+// JSON strings don't count. Walks the slice cursor rather than materialising
+// the whole body as a char list, so a large shallow body is cheap and a
+// deep one is rejected after ~max-json-depth characters.
+fun too-deep( sl : sslice, depth : int, in-str : bool, esc : bool ) : div bool
+  if depth > max-json-depth then True
+  else match sl.next
+    Nothing -> False
+    Just((c, rest)) ->
+      if in-str then
+        if esc then too-deep(rest, depth, True, False)
+        elif c == '\\' then too-deep(rest, depth, True, True)
+        elif c == '"' then too-deep(rest, depth, False, False)
+        else too-deep(rest, depth, True, False)
+      elif c == '"' then too-deep(rest, depth, True, False)
+      elif c == '[' || c == '{' then too-deep(rest, depth + 1, False, False)
+      elif c == ']' || c == '}' then
+        too-deep(rest, if depth > 0 then depth - 1 else 0, False, False)
+      else too-deep(rest, depth, False, False)
 
 fun parse-value() : <parse,div> json
   whitespace0()

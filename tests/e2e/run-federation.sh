@@ -420,6 +420,7 @@ start_daemon() {
     ANNEXWYRM_PUBLIC_REMOTE="$public" \
     ANNEXWYRM_PUBLIC_URL_BASE="http://example.test/dl" \
     ANNEXWYRM_SERVE_DRAIN="0" \
+    ANNEXWYRM_ALLOW_PRIVATE_EGRESS="1" \
         "$BINARY" serve > "$log" 2>&1 &
     echo $!
 }
@@ -538,6 +539,7 @@ run_drain() {
     ANNEXWYRM_USERNAME="$user" \
     ANNEXWYRM_INSTANCE_NAME="$instance" \
     ANNEXWYRM_DATA="$data" \
+    ANNEXWYRM_ALLOW_PRIVATE_EGRESS="1" \
         "$BINARY" drain > "$outlog" 2>&1
 }
 
@@ -630,7 +632,7 @@ count_access() {
 # tier0_signed_post <inbox_url> <body> <priv_key_pem_file> <key_id> <out_status_var>
 # Echoes the HTTP status on stdout.
 tier0_signed_post() {
-    local inbox_url="$1" body="$2" privfile="$3" key_id="$4"
+    local inbox_url="$1" body="$2" privfile="$3" key_id="$4" date_override="${5:-}"
     # Parse the inbox URL: authority (host:port) + request path.
     local hostport path
     hostport="$(printf '%s' "$inbox_url" | sed -E 's#^https?://([^/]+).*#\1#')"
@@ -640,9 +642,14 @@ tier0_signed_post() {
     local digest
     digest="SHA-256=$(printf '%s' "$body" | openssl dgst -sha256 -binary | openssl base64 -A)"
 
-    # RFC 7231 date (GMT). LC_ALL=C to keep day/month names ASCII.
+    # RFC 7231 date (GMT). LC_ALL=C to keep day/month names ASCII. An override
+    # lets a caller forge a stale Date to exercise the anti-replay window.
     local date
-    date="$(LC_ALL=C TZ=GMT date '+%a, %d %b %Y %H:%M:%S GMT')"
+    if [ -n "$date_override" ]; then
+        date="$date_override"
+    else
+        date="$(LC_ALL=C TZ=GMT date '+%a, %d %b %Y %H:%M:%S GMT')"
+    fi
 
     # Canonical signing string. Lines joined with LF, NO trailing newline.
     # Order: (request-target) host date digest  (sign-headers-post).
@@ -1176,6 +1183,59 @@ assert_log_grep_i "$A_DAEMON_LOG" "^\[warn\] inbox/unsigned from=$B_ACTOR type=C
     "F6 A: inbox/unsigned from=\$B_ACTOR type=Create"
 assert_sql_a "SELECT count(*) FROM activity WHERE id='$CREATE_AID';" "1" \
     "F6 unsigned: Create row count unchanged on A (still 1)"
+
+# ===========================================================================
+#  STEP F7 — SECURITY REGRESSIONS for the verified audit findings.
+# ===========================================================================
+note "STEP F7 — signature-auth security regressions"
+
+# --- F7.1  keyId↔actor binding (the CRITICAL impersonation bug). Sign a
+#     VALID request with B's real key, but put actor=A (the local owner) in
+#     the body. Pre-fix this verified and was processed as if from A; now it
+#     MUST be rejected (keyId owner B ≠ activity actor A) with 401 and leave
+#     no row.
+note "F7.1 — forged actor: B signs but claims actor=A"
+FORGED_ID="$B_BASE/activities/forged-impersonation"
+FORGED_BODY="{\"@context\":\"https://www.w3.org/ns/activitystreams\",\"id\":\"$FORGED_ID\",\"type\":\"Create\",\"actor\":\"$A_ACTOR\",\"to\":[\"$A_ACTOR/followers\"],\"object\":{\"id\":\"$B_BASE/items/forged\",\"type\":\"Note\",\"attributedTo\":\"$A_ACTOR\",\"content\":\"forged\"}}"
+forged_code="$(tier0_signed_post "$A_SHARED_INBOX" "$FORGED_BODY" "$B_KEY" "$B_ACTOR#main-key")"
+[ "$forged_code" = "401" ] || { red "F7.1 forged-actor: expected 401, got '$forged_code'"; exit 1; }
+green "  ✓ F7.1 forged-actor (keyId≠actor) rejected with 401"
+assert_log_grep_i "$A_DAEMON_LOG" "inbox/keyid-actor-mismatch" \
+    "F7.1 A: logged inbox/keyid-actor-mismatch"
+assert_sql_a "SELECT count(*) FROM activity WHERE id='$FORGED_ID';" "0" \
+    "F7.1: no row stored for the forged activity"
+
+# --- F7.2  anti-replay freshness window. A correctly-signed, correctly-bound
+#     activity from B, but with a Date two days in the past, MUST be rejected
+#     (replay protection). The signature covers the stale date, so this is a
+#     genuine replay, not a tampering test.
+note "F7.2 — stale Date (replay) is rejected"
+STALE_DATE="Mon, 01 Jan 2024 00:00:00 GMT"
+REPLAY_ID="$B_BASE/activities/replay-test"
+REPLAY_BODY="{\"@context\":\"https://www.w3.org/ns/activitystreams\",\"id\":\"$REPLAY_ID\",\"type\":\"Create\",\"actor\":\"$B_ACTOR\",\"to\":[\"$A_ACTOR/followers\"],\"object\":{\"id\":\"$B_BASE/items/replay\",\"type\":\"Note\",\"attributedTo\":\"$B_ACTOR\",\"content\":\"replay\"}}"
+replay_code="$(tier0_signed_post "$A_SHARED_INBOX" "$REPLAY_BODY" "$B_KEY" "$B_ACTOR#main-key" "$STALE_DATE")"
+[ "$replay_code" = "401" ] || { red "F7.2 stale-date: expected 401, got '$replay_code'"; exit 1; }
+green "  ✓ F7.2 stale-Date replay rejected with 401"
+assert_log_grep_i "$A_DAEMON_LOG" "inbox/stale-or-missing-date" \
+    "F7.2 A: logged inbox/stale-or-missing-date"
+assert_sql_a "SELECT count(*) FROM activity WHERE id='$REPLAY_ID';" "0" \
+    "F7.2: no row stored for the stale/replayed activity"
+
+# --- F7.3  JSON depth-bomb on the UNAUTHENTICATED parse path must not crash
+#     or hang the daemon: it returns 400 and keeps serving.
+note "F7.3 — deeply-nested JSON is rejected, daemon survives"
+DEPTH_BOMB="$(python3 -c 'print("["*5000 + "]"*5000)')"
+bomb_code="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+    --max-time 10 -X POST \
+    -H "Content-Type: application/activity+json" \
+    --data-binary "$DEPTH_BOMB" \
+    "$A_SHARED_INBOX" || echo 000)"
+[ "$bomb_code" = "400" ] || { red "F7.3 depth-bomb: expected 400, got '$bomb_code'"; exit 1; }
+green "  ✓ F7.3 depth-bomb returned 400 (no crash/hang)"
+# The daemon is still alive and serving after the bomb.
+alive_code="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 5 "$A_BASE/" || echo 000)"
+[ "$alive_code" = "200" ] || { red "F7.3: daemon not serving after depth-bomb (got '$alive_code')"; exit 1; }
+green "  ✓ F7.3 daemon still serving (200) after the depth-bomb"
 
 # ===========================================================================
 #  Done.
