@@ -172,10 +172,22 @@ fun urls-json( k : object-kind, links : list<ap-link> ) : json
     Cons(l,Nil) -> ap-link/to-json(l)     // single Link, not wrapped in array
     _        -> arr(links.map(ap-link/to-json))
 
+// Attachments serialize as AS2 `Document` objects (type + mediaType + url +
+// name) — NOT bare `Link`s — because that is the shape Mastodon and friends
+// render as a media/file attachment on a post. The published file blob rides
+// here (see annex/publish); archived items carry no attachment at all.
 fun attachments-or-null( xs : list<ap-link> ) : json
   match xs
     Nil -> JNull
-    _   -> arr(xs.map(ap-link/to-json))
+    _   -> arr(xs.map(attachment-json))
+
+fun attachment-json( l : ap-link ) : json
+  obj-opt([
+    ("type",      string/json("Document")),
+    ("mediaType", str-or-null(l.media-type)),
+    ("url",       string/json(l.href)),
+    ("name",      str-or-null(l.name))
+  ])
 
 // ----------------------------------------------------------------------
 //  Deserialization

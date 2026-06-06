@@ -292,6 +292,15 @@ for needle in "uc?export=download" "$ARCHIVE_REMOTE" "$PUBLIC_REMOTE" "drive.goo
     fi
 done
 green "  ✓ archived (private) file leaks no download link/URL to anon (HTML + AP JSON)"
+# Federate as a renderable Note (Mastodon shows Note/Article, never Document),
+# with the title folded into content, and NO attachment while archived.
+assert_grep "$A_AP" '"type":"Note"' "archived item federates as a Note (renderable post)"
+assert_grep "$A_AP" "Archived PDF"  "title is folded into the federated content"
+if printf '%s' "$A_AP" | grep -qF '"attachment"'; then
+    red "archived item federated an attachment (private blob must not federate)"
+    exit 1
+fi
+green "  ✓ archived item carries no federated attachment"
 
 # ===========================================================================
 #  Step B — publish-file later. Copies to the public remote, mints + stores
@@ -334,6 +343,10 @@ if [ "$USE_GDRIVE" = "1" ]; then
 else
     assert_grep "$B_AP" "http://example.test/dl/$ARCH_SLUG" "published item's AP JSON exposes the download URL to anon"
 fi
+# The published file federates as a Document attachment on a Note (so a remote
+# Mastodon both renders the post AND shows the downloadable file).
+assert_grep "$B_AP" '"type":"Note"'     "published item federates as a Note"
+assert_grep "$B_AP" '"type":"Document"' "published file federates as a Document attachment"
 
 # (b) daemon log — publish-file emits Update (recipients=0).
 assert_log_grep "$LOG" \

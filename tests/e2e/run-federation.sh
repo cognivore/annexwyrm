@@ -1053,12 +1053,17 @@ assert_sql_b "SELECT count(*) FROM activity WHERE type='Update' AND object_id='$
 UPDATE_AID="$(sqlite3 "$B_DB" "SELECT id FROM activity WHERE type='Update' AND object_id='$ITEM_URL' AND inbox_remote=0;")"
 [ -n "$UPDATE_AID" ] || { red "F4b: could not capture UPDATE_AID"; exit 1; }
 note "UPDATE_AID = $UPDATE_AID"
-# The URL must live in the AP object's url[] (an href on a Link), not merely
-# somewhere in the JSON: the compact serializer emits "href":"<url>" with no
-# space (src/core/json.kk json/show), so this anchors the assertion to the
-# url-array structure (§3.4 / prompt: "the url array containing the public URL").
-assert_sql_b "SELECT raw LIKE '%\"href\":\"http://example.test/dl/$ITEM_SLUG\"%' FROM activity WHERE id='$UPDATE_AID';" "1" \
-    "F4b: Update url[] href == the public download URL"
+# The published file must federate as an AP `attachment` (a Document whose
+# `url` is the public download) — that is what Mastodon renders as a file on
+# the post, and it is how a PUBLIC data link enters federated data. The
+# compact serializer emits "url":"<url>" with no space (json/show), so this
+# anchors to the Document-attachment structure.
+assert_sql_b "SELECT raw LIKE '%\"type\":\"Document\"%\"url\":\"http://example.test/dl/$ITEM_SLUG\"%' FROM activity WHERE id='$UPDATE_AID';" "1" \
+    "F4b: Update federates the public download as a Document attachment"
+# And the activity object is a Note (Mastodon renders Note/Article as posts;
+# a top-level Document/Audio/etc. shows as 'No posts here').
+assert_sql_b "SELECT raw LIKE '%\"type\":\"Note\"%' FROM activity WHERE id='$UPDATE_AID';" "1" \
+    "F4b: the federated object is a Note (renderable as a post)"
 assert_sql_b "SELECT count(*) FROM delivery WHERE activity_id='$UPDATE_AID' AND inbox_url='$A_SHARED_INBOX' AND state='pending';" "1" \
     "F4b: one Update delivery queued to A's SHARED inbox, pending"
 
@@ -1120,10 +1125,11 @@ assert_sql_a "SELECT object_id FROM activity WHERE id='$CREATE_AID';" "$ITEM_URL
     "F5: Create object_id == \$ITEM_URL"
 assert_sql_a "SELECT raw LIKE '%$ITEM_URL%' AND raw LIKE '%Federated Treatise%' FROM activity WHERE id='$CREATE_AID';" "1" \
     "F5: full published object body stored in A's activity.raw"
-# A's stored Update carries the download URL in the url[] href (the published
-# blob signal arrived intact over the wire), not merely somewhere in the body.
-assert_sql_a "SELECT raw LIKE '%\"href\":\"http://example.test/dl/$ITEM_SLUG\"%' FROM activity WHERE type='Update' AND object_id='$ITEM_URL' AND inbox_remote=1;" "1" \
-    "F5: A's inbound Update url[] href == the public download URL (over the wire)"
+# A's stored Update carries the published download as a Document attachment
+# (the public blob signal arrived intact over the wire), not merely somewhere
+# in the body.
+assert_sql_a "SELECT raw LIKE '%\"type\":\"Document\"%\"url\":\"http://example.test/dl/$ITEM_SLUG\"%' FROM activity WHERE type='Update' AND object_id='$ITEM_URL' AND inbox_remote=1;" "1" \
+    "F5: A's inbound Update carries the download as a Document attachment (over the wire)"
 # FINDING 9 (unchanged): A stores the activity, NOT a remote item row.
 assert_sql_a "SELECT count(*) FROM item WHERE id='$ITEM_URL';" "0" \
     "F5: A creates NO item row for B's object (FINDING 9)"

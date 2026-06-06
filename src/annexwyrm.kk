@@ -46,6 +46,7 @@ import ap/outbox
 import ap/inbox
 import ap/deliver_worker
 import ap/persist
+import web/handler/item   // load-item, for `publish` (re-announce)
 import web/route
 import web/server
 
@@ -258,7 +259,18 @@ fun cmd-publish( item-id : string ) : io ()
   if h < 0 then println("db open failed")
   else
     with with-sqlite-db(h)
-    println("not yet wired: publish " ++ item-id)
+    // Re-announce: emit a fresh Create for an existing item (with its current
+    // federated representation + tags). Used to re-federate after a
+    // representation change, or to (re-)deliver to a follower. Accepts a full
+    // item URL or a bare slug.
+    val full = if item-id.starts-with("http").bool then item-id
+               else get-base-url() ++ "/items/" ++ item-id
+    match load-item(full)
+      Nothing  -> println("no such item: " ++ full)
+      Just(it) ->
+        info("cli/publish", [("id", full)])
+        emit-create(it)
+        println("re-announced Create for " ++ full)
 
 fun cmd-follow( target-url : string ) : io ()
   with with-env-config

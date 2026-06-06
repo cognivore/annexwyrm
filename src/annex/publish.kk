@@ -18,37 +18,62 @@ import annex/item
 // `followers-url` is the owner actor's followers collection URL.
 //
 // Every item is public, so the audience is always `ItPublic`
-// (`to=[Public], cc=[followers]`). The `url[]` is built from the item's
-// file-publication state, NOT from any per-mirror flag: archived items
-// (`file-published=False`) carry an EMPTY url[] — nothing about the blob
-// leaks — and published items carry the download URL (uc?export=download)
-// first and the viewer mirror (open?id) second.
+// (`to=[Public], cc=[followers]`).
+//
+// We federate every item as a **Note** — the universally-rendered AS2 post
+// type. Mastodon (and most of the fediverse) only displays Note/Article as
+// posts; a top-level `Document`/`Audio`/`Video`/`Image` object is ingested
+// but shown as "No posts here". Our items are reviews (text) of a media
+// piece (file), which is exactly a Note whose body is the review and whose
+// optional attachment is the file. The internal object-kind still drives our
+// OWN UI; this is only the federated projection.
+//
+// The title is folded into `content` (Mastodon renders `content`, not `name`
+// for a Note) so it stays visible. The PUBLISHED file rides in `attachment`
+// (a Document), NOT `url[]` — url[] is only emitted for file-kinds and we are
+// now a Note, and an attachment is what Mastodon renders as a downloadable
+// file. Archived items carry NO attachment — the private blob never leaks;
+// a public data link federates only once the file is published.
+//
 // `tags` are the item's hashtags (normalised, no '#'); they live in a side
-// table, so the caller loads them and threads them in (the annex-item value
-// struct stays untouched — no extra positional field to churn through every
-// constructor / koka#654 site). Default [] keeps existing call sites that
-// don't care about tags compiling unchanged.
+// table, so the caller threads them in (the annex-item value struct stays
+// untouched — no extra positional field / koka#654 site). Default [] keeps
+// existing call sites compiling unchanged.
 pub fun item-to-ap-object( i : annex-item, followers-url : url, tags : list<string> = [] ) : ap-object
   val (to, cc) = build-addressing(ItPublic, followers-url, [])
+  val title-html = if i.name == "" then "" else "<p><strong>" ++ i.name ++ "</strong></p>\n"
   Ap-object(
     id            = i.id,
-    kind          = i.kind,
+    kind          = OkNote,
     attributed-to = i.owner,
     name          = i.name,
     summary       = i.summary,
-    content       = i.content,
-    media-type    = i.media-type,
-    urls          = file-publication-links(i),
+    content       = title-html ++ i.content,
+    media-type    = "",
+    urls          = [],
     in-reply-to   = i.in-reply-to,
     published     = i.published-at,
     updated       = if i.updated-at == i.published-at then "" else i.updated-at,
     to            = to,
     cc            = cc,
     sensitive     = i.summary != "",
-    attachment    = [],
+    attachment    = file-attachments(i),
     rating        = i.rating,
     tags          = tags
   )
+
+// The federated `attachment` list: the published download as an AS2 Document
+// (so a Mastodon post shows a downloadable file). Archived ⇒ [] (the private
+// blob never federates). This is where a PUBLIC data link enters federated
+// data — the user's invariant: public file ⇒ in the federated object.
+fun file-attachments( i : annex-item ) : list<ap-link>
+  if !i.file-published || i.file-public-url == "" then []
+  else [Ap-link(
+    href       = i.file-public-url,
+    media-type = i.media-type,
+    name       = if i.name == "" then "download" else i.name,
+    rel        = ""
+  )]
 
 // The AP `url[]` payload for an item, derived purely from its
 // file-publication state. Archived ⇒ []; published ⇒ the download link
