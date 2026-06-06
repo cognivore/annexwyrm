@@ -62,12 +62,13 @@ pub fun main() : io ()
     Cons("init", Cons(d, _))    -> cmd-init(d)
     Cons("dump-actor", _)       -> cmd-dump-actor()
     Cons("publish", Cons(i, _)) -> cmd-publish(i)
+    Cons("refresh", Cons(i, _)) -> cmd-refresh(i)
     Cons("follow", Cons(a, _))  -> cmd-follow(a)
     Cons("unfollow", Cons(a, _)) -> cmd-unfollow(a)
     _ -> usage()
 
 fun usage() : console ()
-  println("usage: annexwyrm <serve|drain|init DIR|dump-actor|publish ID|follow URL|unfollow URL>")
+  println("usage: annexwyrm <serve|drain|init DIR|dump-actor|publish ID|refresh ID|follow URL|unfollow URL>")
 
 // ----------------------------------------------------------------------
 //  init: create database + minted keypair
@@ -271,6 +272,33 @@ fun cmd-publish( item-id : string ) : io ()
         info("cli/publish", [("id", full)])
         emit-create(it)
         println("re-announced Create for " ++ full)
+
+// Force remote servers to re-ingest an item with its CURRENT representation:
+// emit a Delete (so a stale copy — e.g. one Mastodon classified as a reply
+// from an old inReplyTo — is removed) THEN a fresh Create. The drain delivers
+// them in order (Delete first). Accepts a full item URL or a bare slug.
+fun cmd-refresh( item-id : string ) : io ()
+  with with-env-config
+  with with-console-log
+  with with-real-time
+  with with-urandom-rng
+  with with-openssl-crypto
+  with with-curl-deliver
+  with with-process-shell
+  with with-rclone-store
+  val h = kk-db-open(get-data-dir() ++ "/annexwyrm.db")
+  if h < 0 then println("db open failed")
+  else
+    with with-sqlite-db(h)
+    val full = if item-id.starts-with("http").bool then item-id
+               else get-base-url() ++ "/items/" ++ item-id
+    match load-item(full)
+      Nothing  -> println("no such item: " ++ full)
+      Just(it) ->
+        info("cli/refresh", [("id", full)])
+        emit-delete(it)
+        emit-create(it)
+        println("emitted Delete + Create for " ++ full)
 
 fun cmd-follow( target-url : string ) : io ()
   with with-env-config

@@ -840,6 +840,21 @@ K_PRE_HTML=$(fetch_html_anon "$SOCK" "$REV_PATH")
 assert_grep "$K_PRE_HTML" "(untitled)" "review starts untitled (the prod symptom)"
 assert_grep "$K_PRE_HTML" "review of <a href=\"$REV_PARENT\"" "review-of preamble present pre-edit"
 
+# FEDERATION: a review is a standalone Note that REFERENCES the reviewed URL
+# in its content — NOT an AP reply. Setting inReplyTo to a non-fediverse URL
+# makes Mastodon flag the status as a reply with an unresolvable parent and
+# hides it from the profile's "Posts" tab. So the federated Note must carry
+# NO inReplyTo, and fold "review of <link>" into the content instead.
+REV_AP=$(fetch_ap_anon "$SOCK" "$REV_PATH")
+assert_grep "$REV_AP" '"type":"Note"' "review federates as a Note"
+assert_grep "$REV_AP" "review of <a href" "review-of preamble folded into federated content"
+assert_grep "$REV_AP" "$REV_PARENT"       "reviewed URL present in the federated content"
+if printf '%s' "$REV_AP" | grep -qF '"inReplyTo"'; then
+    red "review federated WITH inReplyTo — Mastodon would hide it from the Posts tab"
+    exit 1
+fi
+green "  ✓ review federates as a top-level Note (no inReplyTo)"
+
 sleep 1
 K_RESULT=$(edit_item "$SOCK" "$JAR" "$REV_SLUG" \
     "Six's Sharpied Kamigawa" "" \

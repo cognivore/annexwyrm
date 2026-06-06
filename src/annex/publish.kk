@@ -41,17 +41,26 @@ import annex/item
 // existing call sites compiling unchanged.
 pub fun item-to-ap-object( i : annex-item, followers-url : url, tags : list<string> = [] ) : ap-object
   val (to, cc) = build-addressing(ItPublic, followers-url, [])
+  // The title and the "review of <url>" reference are folded into the Note's
+  // content. We deliberately DO NOT set `inReplyTo`: an annexwyrm review is a
+  // standalone post that *references* a resource, not an ActivityStreams
+  // reply to another fediverse post. Setting inReplyTo to a non-AP URL (e.g.
+  // a cubecobra page) made Mastodon flag the status reply=true with an
+  // unresolvable parent, which hides it from the profile's "Posts" tab
+  // (verified via social.doma.dev's API). The reference lives in the body.
   val title-html = if i.name == "" then "" else "<p><strong>" ++ i.name ++ "</strong></p>\n"
+  val reviewof-html = if i.in-reply-to == "" then ""
+    else "<p>review of <a href=\"" ++ i.in-reply-to ++ "\">" ++ i.in-reply-to ++ "</a></p>\n"
   Ap-object(
     id            = i.id,
     kind          = OkNote,
     attributed-to = i.owner,
     name          = i.name,
     summary       = i.summary,
-    content       = title-html ++ i.content,
+    content       = title-html ++ reviewof-html ++ i.content,
     media-type    = "",
     urls          = [],
-    in-reply-to   = i.in-reply-to,
+    in-reply-to   = "",
     published     = i.published-at,
     updated       = if i.updated-at == i.published-at then "" else i.updated-at,
     to            = to,
