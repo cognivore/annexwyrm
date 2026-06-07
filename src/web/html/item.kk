@@ -90,12 +90,20 @@ fun file-state-block( i : annex-item, is-owner : bool ) : string
       "<a class=\"download\" href=\"" ++ esc(i.file-public-url) ++
       "\" rel=\"nofollow\">download</a>" ++ view ++ "</p>"
   else
+    // The owner — and ONLY the owner — gets a private download link (the
+    // authenticated /items/<id>/file route streams the archived blob) plus the
+    // publish-file action. An anonymous visitor sees just the "archived" line,
+    // never a link: an archived file leaks nothing to anyone not logged in.
+    val owner-dl =
+      if !is-owner then ""
+      else " <a class=\"download-private\" href=\"/items/" ++ esc(tail) ++
+           "/file\">download (private)</a>"
     val action =
       if !is-owner then ""
       else "\n  <form action=\"/items/" ++ esc(tail) ++ "/publish-file\" method=\"post\">\n" ++
            "    <button type=\"submit\">publish file</button>\n" ++
            "  </form>"
-    "  <p class=\"file-state archived\">file archived, not published</p>" ++ action
+    "  <p class=\"file-state archived\">file archived, not published" ++ owner-dl ++ "</p>" ++ action
 
 // True iff this item actually has a file blob (vs a pure-text review). A
 // file-less review has byte_size 0 and no mirror remotes.

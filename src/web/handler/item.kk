@@ -73,6 +73,44 @@ pub fun handle-item-publish-file( req : request, id : string )
                 server-error("public put failed: blob could not be published to " ++
                              get-public-remote())
 
+// GET /items/<id>/file — OWNER-ONLY private download. Streams the blob from
+// the encrypted ARCHIVE remote (rclone decrypts on the way out) through this
+// authenticated route. This is how the owner reaches a file that is archived
+// (no public link): the bytes are served only over a valid owner session and
+// the blob never gets a public URL. Anonymous / non-owner requests are
+// forbidden — an archived file must leak nothing to anyone not logged in.
+// (A published file is reachable by everyone via its public link; this route
+// additionally lets the owner pull the canonical archived copy any time.)
+pub fun handle-item-file( req : request, id : string )
+  : <db,config,store,div|e> response
+  if !is-owner-session(req) then forbidden("login required")
+  else
+    val full-id = get-base-url() ++ "/items/" ++ id
+    match load-item(full-id)
+      Nothing -> not-found("no such item")
+      Just(it) ->
+        if !(it.byte-size > 0 || it.remotes.is-cons) then not-found("no file")
+        else
+          val slug = id-tail(full-id)
+          match blob-get(Blob-loc(get-archive-remote(), slug))
+            Nothing -> not-found("file not found in archive")
+            Just(bytes) ->
+              val ct = if it.media-type == "" then "application/octet-stream"
+                       else it.media-type
+              ok-binary(ct, bytes)
+                .with-header("Content-Disposition",
+                  "attachment; filename=\"" ++ safe-filename(it, slug) ++ "\"")
+
+// A header-safe download filename: keep only plain word chars, dot, dash,
+// underscore and space (so no quote / CR / LF can break the
+// Content-Disposition header), fall back to the slug when nothing's left.
+fun safe-filename( it : annex-item, slug : string ) : string
+  val keep = it.name.list.filter(fn(c)
+    (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+    (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_' || c == ' '
+  ).string.trim
+  if keep == "" then slug else keep
+
 // GET /items/<id>/edit — the owner's edit form, pre-filled with the
 // item's current review metadata. Owner-gated; anonymous visitors and
 // non-owners are forbidden (the form is the only way to mutate a review).
@@ -218,15 +256,30 @@ fun apply-file-change(
 // Drive/network error) would otherwise leave the file downloadable while the
 // DB + federation say "private". The caller turns False into a 5xx and leaves
 // the item published, so the visible state never lies about reachability.
+//
+// DATA-SAFETY GUARD: we only ever delete the PUBLIC mirror, and only once the
+// encrypted-archive (private) copy is verifiably present — so a delete can
+// only remove a redundant copy, never the last one. This also fails safe if
+// the public remote were mis-configured equal to the archive remote. (Answer
+// to "do you ever delete a file with no private counterpart?" — no, refused.)
 fun revoke-public( slug : string ) : <log,config,store|e> bool
-  val loc = Blob-loc(get-public-remote(), slug)
-  blob-del(loc)
-  if blob-has(loc) then
-    error("edit/public-delete-failed",
+  if get-public-remote() == get-archive-remote() then
+    error("edit/refuse-delete-remotes-equal",
       [("remote", get-public-remote()), ("slug", slug)])
     False
+  elif !blob-has(Blob-loc(get-archive-remote(), slug)) then
+    error("edit/refuse-delete-no-archive",
+      [("archive", get-archive-remote()), ("slug", slug)])
+    False
   else
-    True
+    val loc = Blob-loc(get-public-remote(), slug)
+    blob-del(loc)
+    if blob-has(loc) then
+      error("edit/public-delete-failed",
+        [("remote", get-public-remote()), ("slug", slug)])
+      False
+    else
+      True
 
 fun guess-kind( media : string ) : object-kind
   match media-type/parse(media)

@@ -1231,6 +1231,23 @@ R1_AP=$(fetch_ap_anon "$SOCK" "$RF_PATH")
 if printf '%s' "$R1_AP" | grep -qF '"attachment"'; then red "R1: archived item federated an attachment"; exit 1; fi
 green "  ✓ R1: archived item federates no attachment"
 
+# --- R1b: the OWNER (signed in) CAN privately download the archived file via
+#          the authenticated /items/<id>/file route; an anon CANNOT. The blob
+#          is streamed from the encrypted archive — it never gets a public URL.
+OWN_CODE=$(curl -s -o "$TMP/r1b.own.dl" -w '%{http_code}' --unix-socket "$SOCK" --cookie "$JAR" "http://x$RF_PATH/file")
+[ "$OWN_CODE" = "200" ] || { red "R1b: owner private download expected 200, got $OWN_CODE"; exit 1; }
+cmp -s "$TMP/r1b.own.dl" "$PDF_ONE" || { red "R1b: owner-downloaded archived bytes != original"; exit 1; }
+green "  ✓ R1b: owner privately downloads the archived file (200, bytes == original)"
+ANON_DL_CODE=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" "http://x$RF_PATH/file")
+[ "$ANON_DL_CODE" = "403" ] || { red "R1b: anon private download expected 403, got $ANON_DL_CODE"; exit 1; }
+green "  ✓ R1b: anon is FORBIDDEN from the private download (403, no bytes)"
+# the page: owner sees the private download link; anon does NOT.
+R1_OWNER_HTML=$(fetch_html "$SOCK" "$JAR" "$RF_PATH")
+assert_grep "$R1_OWNER_HTML" "/items/$RF_SLUG/file" "R1b: owner sees the private download link"
+if printf '%s' "$R1_HTML" | grep -q "/items/$RF_SLUG/file"; then
+    red "R1b: anon page leaked the private download link"; exit 1; fi
+green "  ✓ R1b: anon page does NOT show the private download link"
+
 # --- R2: PUBLISH the file via edit (publish checkbox, no new file) ---
 R2=$(edit_item "$SOCK" "$JAR" "$RF_SLUG" "Little Fires" "" \
      "A review that will gain a file." "1" "https://bookwyrm.social/book/2000" "" "" "publish")
@@ -1292,6 +1309,12 @@ for needle in "uc?export=download" "$PUBLIC_REMOTE" "drive.google.com"; do
     if printf '%s' "$R3_AP" | grep -qF "$needle"; then red "R3: AP JSON still leaks a public-blob reference: $needle"; exit 1; fi
 done
 green "  ✓ R3: attachment + all public-blob references retracted from federation"
+# Make-private revokes PUBLIC access but the OWNER keeps private access — the
+# archive copy is intact, so the authenticated download still works.
+R3_OWN_CODE=$(curl -s -o "$TMP/r3.own.dl" -w '%{http_code}' --unix-socket "$SOCK" --cookie "$JAR" "http://x$RF_PATH/file")
+{ [ "$R3_OWN_CODE" = "200" ] && cmp -s "$TMP/r3.own.dl" "$PDF_ONE"; } \
+    && green "  ✓ R3: owner still privately downloads the file (public revoked, owner access intact)" \
+    || { red "R3: owner lost private access after make-private (code=$R3_OWN_CODE)"; exit 1; }
 
 # --- R4: re-publish after private. The object must come BACK and be fetchable
 #         again — proving R3 genuinely DELETED it (re-publish had to re-create

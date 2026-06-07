@@ -79,6 +79,8 @@ pub fun dispatch( req : request )
       handle-home(req)
     ("GET",    Cons("items", Cons(id, Nil))) ->
       handle-item(req, id)
+    ("GET",    Cons("items", Cons(id, Cons("file", Nil)))) ->
+      handle-item-file(req, id)
     ("GET",    Cons("items", Cons(id, Cons("edit", Nil)))) ->
       handle-item-edit-form(req, id)
     ("POST",   Cons("items", Cons(id, Cons("edit", Nil)))) ->

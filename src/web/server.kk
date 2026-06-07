@@ -50,6 +50,14 @@ pub fun ok-json( body : string ) : response
            [("Content-Type", "application/json; charset=utf-8")],
            body)
 
+// A 200 with a raw binary body (e.g. an owner streaming an archived blob).
+// `body` carries the bytes verbatim; Content-Length is set from byte-count
+// in format-response, so arbitrary binary (NUL/0x1F/high bytes) is fine.
+pub fun ok-binary( content-type : string, body : string ) : response
+  Response(200, "OK",
+           [("Content-Type", content-type)],
+           body)
+
 pub fun see-other( location : string ) : response
   Response(303, "See Other",
            [("Location", location),
