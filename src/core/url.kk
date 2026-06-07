@@ -193,3 +193,11 @@ fun parse-pair( p : string ) : div (string,string)
   match p.find("=")
     Nothing   -> (url-decode(p), "")
     Just(slc) -> (url-decode(slc.before.string), url-decode(slc.after.string))
+
+// The 1-based `?page=N` value from a raw query string ("page=2&q=x"), or 0
+// when absent or unparseable. Callers clamp it into the valid range (the
+// listing handlers do: 1 ≤ page ≤ pages). Shared by the home/search/tag
+// handlers so they parse the page cursor identically.
+pub fun page-param( q : string ) : div int
+  query-parse(q).filter(fn(p) p.fst == "page").head
+    .map(fn(p) p.snd.parse-int.default(0)).default(0)

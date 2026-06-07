@@ -4,27 +4,34 @@
 
 module web/html/search
 
+import core/url
 import web/html/layout
 import web/html/home
 
 // Search results page. `q` is the raw query (echoed in the box + heading);
-// `rows` are the matches (already shaped as home-rows by the handler).
-pub fun render-search( q : string, rows : list<home-row> ) : string
+// `rows` are the matches (already shaped as home-rows by the handler) for the
+// current page; `page`/`total`/`size` drive the page controls. The page-link
+// base preserves the query: `/search?q=<encoded>&page=`.
+pub fun render-search( q : string, rows : list<home-row>,
+                       page : int, total : int, size : int ) : string
   val heading = if q == "" then "search"
                 else "results for “" ++ esc(q) ++ "”"
   val body = ([
     "<h1>" ++ heading ++ "</h1>",
     search-box(q),
-    results-or-empty(rows, "no matches.")
+    results-or-empty(rows, "no matches."),
+    pagination("/search?q=" ++ url-encode(q) ++ "&page=", page, total, size)
   ]).join("\n")
   layout("search — annexwyrm", "", "<a href=\"/\">archive</a> · search", body)
 
-// A single tag's items.
-pub fun render-tag( tag : string, rows : list<home-row> ) : string
+// A single tag's items, paginated. The page-link base is `/tags/<encoded>?page=`.
+pub fun render-tag( tag : string, rows : list<home-row>,
+                    page : int, total : int, size : int ) : string
   val body = ([
     "<h1>#" ++ esc(tag) ++ "</h1>",
     search-box(""),
     results-or-empty(rows, "no items tagged #" ++ esc(tag) ++ " yet."),
+    pagination("/tags/" ++ url-encode(tag) ++ "?page=", page, total, size),
     "<p class=\"back\"><a href=\"/tags\">all tags</a></p>"
   ]).join("\n")
   layout("#" ++ tag ++ " — annexwyrm", "",

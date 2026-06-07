@@ -226,3 +226,26 @@ a.tag {
 a.tag:hover { background: #e8e8f0; }
 .tag-cloud { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
 .tag-cloud .count { color: var(--fg-mute); font-size: 12px; }
+
+/* --- pagination --------------------------------------------------------- */
+nav.pagination {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    margin: 18px 0 6px; padding-top: 10px;
+    border-top: 1px solid var(--border);
+    font-family: Menlo, Consolas, monospace; font-size: 13px;
+}
+nav.pagination .step { font-weight: bold; text-decoration: none; }
+nav.pagination .step.older { margin-left: auto; }
+nav.pagination .step.disabled { color: var(--fg-mute); font-weight: normal; }
+nav.pagination .pages { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+nav.pagination .page {
+    display: inline-block; min-width: 1.4em; text-align: center;
+    padding: 0 6px; border: 1px solid var(--border);
+    background: #f4f4f4; color: var(--link); text-decoration: none;
+}
+nav.pagination a.page:hover { background: #e8e8f0; }
+nav.pagination .page.current {
+    background: var(--accent); color: #fff; border-color: var(--accent);
+    font-weight: bold;
+}
+nav.pagination .gap { color: var(--fg-mute); padding: 0 2px; }

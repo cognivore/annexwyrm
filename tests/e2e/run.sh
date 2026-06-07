@@ -1173,6 +1173,62 @@ printf '%s' "$AFTER_DETAILS" | grep -q '<section class="content">' \
 if printf '%s' "$BEFORE_DETAILS" | grep -q '<section class="content">'; then
     red "body content also renders OUTSIDE the spoiler (not hidden)"; exit 1; fi
 
+# ===========================================================================
+#  Step Q — PAGINATION. The public archive paginates at items-per-page (50)
+#  with on-page controls (newer/older + numbered links). We seed 60 newest
+#  items straight into the DB (cheaper than 60 uploads) so the list spans two
+#  pages, then assert the controls render, the pages differ, and an out-of-
+#  range cursor clamps. Done LAST so the seeded rows pollute nothing earlier.
+# ===========================================================================
+note "=== Step Q — archive pagination controls ==="
+OWNER=$(sqlite3 "$DB" "SELECT id FROM actor WHERE local=1 LIMIT 1;")
+[ -n "$OWNER" ] || { red "no local actor to own paginated test rows"; exit 1; }
+{
+    echo "PRAGMA busy_timeout=5000;"
+    echo "BEGIN;"
+    for n in $(seq -w 1 60); do
+        # year 3000 ⇒ these sort newest; lexical order on the zero-padded
+        # second makes pg-60 the newest and pg-01 the oldest of the batch.
+        echo "INSERT INTO item (id,owner_id,object_type,name,published_at,updated_at) VALUES ('http://x/items/pg-$n','$OWNER','Note','pgitem-$n','3000-01-01T00:00:${n}Z','3000-01-01T00:00:${n}Z');"
+    done
+    echo "COMMIT;"
+} | sqlite3 "$DB" >/dev/null
+assert_sql "$DB" "SELECT count(*) FROM item WHERE id LIKE 'http://x/items/pg-%';" "60" "seeded 60 paginated rows"
+
+# Page 1 (newest): controls present, a link to page 2, current marker = 1,
+# the newest seeded row, and the "newer" step disabled (no page 0).
+PG1=$(fetch_html_anon "$SOCK" "/")
+assert_grep "$PG1" 'class="pagination"'            "page 1 shows pagination controls"
+assert_grep "$PG1" 'href="/?page=2"'               "page 1 links to page 2"
+# The NUMBERED page-2 link specifically (not just the 'older →' step button),
+# which proves the ±2 window is inclusive of its upper bound — `list(lo,hi)`
+# in Koka includes both ends, so page 1 of 2 shows the [1][2] numbers.
+assert_grep "$PG1" '<a class="page" href="/?page=2">2</a>' "page 1 shows the NUMBERED page-2 link (inclusive window)"
+assert_grep "$PG1" 'aria-current="page">1<'        "page 1 marks itself current"
+assert_grep "$PG1" 'pgitem-60'                      "page 1 holds the newest seeded item"
+assert_grep "$PG1" '<span class="step newer disabled"' "page 1 disables the newer step"
+if printf '%s' "$PG1" | grep -q 'pgitem-01'; then
+    red "page 1 leaked an item that belongs on page 2"; exit 1; fi
+green "  ✓ page 1 excludes page-2 items"
+
+# Page 2: a real "newer" link back, current marker = 2, the oldest seeded row,
+# and the "older" step disabled (last page).
+PG2=$(fetch_html_anon "$SOCK" "/?page=2")
+assert_grep "$PG2" '<a class="step newer"'         "page 2 links back to newer"
+assert_grep "$PG2" '<a class="page" href="/?page=1">1</a>' "page 2 shows the NUMBERED page-1 link"
+assert_grep "$PG2" 'aria-current="page">2<'        "page 2 marks itself current"
+assert_grep "$PG2" 'pgitem-01'                      "page 2 holds the oldest seeded item"
+assert_grep "$PG2" '<span class="step older disabled"' "page 2 (last) disables the older step"
+
+# Clamp: an out-of-range cursor collapses to the last page, not an empty list.
+PG999=$(fetch_html_anon "$SOCK" "/?page=999")
+assert_grep "$PG999" 'aria-current="page">2<'      "?page=999 clamps to the last page"
+assert_grep "$PG999" 'pgitem-01'                    "clamped page still lists items"
+# …and a non-positive cursor collapses to page 1.
+PG0=$(fetch_html_anon "$SOCK" "/?page=0")
+assert_grep "$PG0" 'aria-current="page">1<'        "?page=0 clamps to page 1"
+green "  ✓ pagination cursor clamps both ends"
+
 green ""
 green "=========================================="
 green "  e2e (socket) passed.  data dir: $DATA"
