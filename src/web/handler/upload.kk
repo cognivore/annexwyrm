@@ -47,19 +47,49 @@ pub fun handle-upload-post( req : request )
     match parse-multipart(ct, req.body)
       Nothing -> bad-request("expected multipart/form-data")
       Just(parts) ->
-        val files-list = files(parts)
-        match files-list
-          Nil -> bad-request("no file uploaded")
+        val summary = parts.field("summary").default("")
+        val content = parts.field("content").default("")
+        val rating = clamp-rating(parts.field("rating").default("99").parse-int.default(99))
+        val in-reply-to = parts.field("in_reply_to").default("")
+        val tags = parse-tags(parts.field("tags").default(""))
+        match files(parts)
+          // A FILE-LESS review: a pure-text review that references a resource
+          // (e.g. a book on bookwyrm) by its URL, with no blob. The file is
+          // optional now — annexwyrm reviews are not only file archives.
+          Nil ->
+            val name = parts.field("name").default("")
+            ingest-textonly(name, summary, content, rating, in-reply-to, tags)
           Cons(f, _) ->
             val name = parts.field("name").default(f.filename)
-            val summary = parts.field("summary").default("")
-            val content = parts.field("content").default("")
-            val rating = clamp-rating(parts.field("rating").default("99").parse-int.default(99))
-            val in-reply-to = parts.field("in_reply_to").default("")
             // The publish-file checkbox: present (any value) ⇒ publish now.
             val publish-now = parts.field("publish_file").is-just
-            val tags = parse-tags(parts.field("tags").default(""))
             ingest(f, name, summary, content, rating, in-reply-to, publish-now, tags)
+
+// A file-less review: build a Note-kind item with no blob (byte 0, no sha,
+// no remotes, not published), persist it + its tags, and federate the Create.
+// Mirrors ingest's tail but skips all the blob machinery.
+fun ingest-textonly(
+    name : string, summary : string, content : string,
+    rating : int, in-reply-to : string, tags : list<string>
+  ) : <db,time,rng,log,config,div|e> response
+  val now = now-iso()
+  val owner = get-base-url() ++ "/users/" ++ get-local-username()
+  val slug = rand-hex(12)
+  val id = get-base-url() ++ "/items/" ++ slug
+  val it = Annex-item(
+    id, owner, OkNote,
+    name, summary, content, "",
+    0, "",
+    rating, in-reply-to,
+    False, "", "",
+    now, now,
+    []
+  )
+  save-item(it)
+  save-item-tags(id, tags)
+  emit-create(it)
+  info("upload/done-textonly", [("id", id), ("rating", rating.show)])
+  see-other("/items/" ++ slug)
 
 fun ingest(
     f : mpart,

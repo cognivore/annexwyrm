@@ -1132,6 +1132,35 @@ JS_HTML=$(fetch_html_anon "$SOCK" "$JS_PATH")
 if printf '%s' "$JS_HTML" | grep -qF 'href="javascript:'; then
     red "javascript: in_reply_to rendered as a clickable anchor (XSS)"; exit 1; fi
 green "  ✓ javascript: review-of URL renders as text, not an anchor"
+
+# ===========================================================================
+#  Step P — FILE-LESS review. A review can reference a resource (a book URL)
+#  with NO uploaded file: no blob, no remotes, byte_size 0, a Note that
+#  federates and shows no file-state line. (Needed for the bookwyrm import.)
+# ===========================================================================
+note "=== Step P — file-less (text-only) review ==="
+PTXT_HDR=$(mktemp)
+curl -s -o /dev/null -D "$PTXT_HDR" --unix-socket "$SOCK" --cookie "$JAR" \
+  --form-string "name=Snow Crash" --form-string "summary=" \
+  --form-string "content=A **great** read." \
+  --form-string "rating=2" \
+  --form-string "in_reply_to=https://bookwyrm.social/book/1000" \
+  --form-string "tags=scifi" \
+  "http://x/upload"
+PTXT_PATH=$(grep -i '^location:' "$PTXT_HDR" | sed -E 's/^[^:]*:[[:space:]]*//' | tr -d '\r'); rm -f "$PTXT_HDR"
+[ -n "$PTXT_PATH" ] || { red "file-less upload returned no Location"; exit 1; }
+PTXT_URL="http://localhost$PTXT_PATH"
+assert_sql "$DB" "SELECT byte_size FROM item WHERE id='$PTXT_URL';" "0" "file-less review byte_size 0"
+assert_sql "$DB" "SELECT count(*) FROM item_remote WHERE item_id='$PTXT_URL';" "0" "file-less review has no mirror remotes"
+assert_sql "$DB" "SELECT object_type FROM item WHERE id='$PTXT_URL';" "Note" "file-less review is a Note"
+assert_sql "$DB" "SELECT in_reply_to FROM item WHERE id='$PTXT_URL';" "https://bookwyrm.social/book/1000" "review-of book URL stored"
+PTXT_HTML=$(fetch_html_anon "$SOCK" "$PTXT_PATH")
+assert_grep "$PTXT_HTML" "<strong>great</strong>" "file-less review renders markdown"
+assert_grep "$PTXT_HTML" 'review of <a href="https://bookwyrm.social/book/1000"' "review-of link to the book"
+if printf '%s' "$PTXT_HTML" | grep -q "file archived, not published"; then
+    red "file-less review wrongly shows a file-state line"; exit 1; fi
+green "  ✓ file-less review shows no file-state"
+assert_sql "$DB" "SELECT count(*) FROM activity WHERE type='Create' AND object_id='$PTXT_URL';" "1" "file-less review federates a Create"
 # SPOILER: with a CW set, the body is wrapped in <details> (hidden) — and the
 # content section lives INSIDE the details, not outside it.
 assert_grep "$MD_HTML" '<details class="cw"><summary>spoilers ahead</summary>' \

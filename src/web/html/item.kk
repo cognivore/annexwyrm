@@ -81,7 +81,8 @@ fun body-block( i : annex-item ) : div string
 //     No form (one-way for v1).
 fun file-state-block( i : annex-item, is-owner : bool ) : string
   val tail = i.id.split("/").reverse.head.default("")
-  if i.file-published then
+  if !has-file(i) then ""   // a pure-text review (e.g. a book) has no file
+  elif i.file-published then
     val view = if i.file-view-url == "" || i.file-view-url == i.file-public-url then ""
                else " <a class=\"view\" href=\"" ++ esc(i.file-view-url) ++
                     "\" rel=\"nofollow\">view</a>"
@@ -95,6 +96,11 @@ fun file-state-block( i : annex-item, is-owner : bool ) : string
            "    <button type=\"submit\">publish file</button>\n" ++
            "  </form>"
     "  <p class=\"file-state archived\">file archived, not published</p>" ++ action
+
+// True iff this item actually has a file blob (vs a pure-text review). A
+// file-less review has byte_size 0 and no mirror remotes.
+fun has-file( i : annex-item ) : bool
+  i.byte-size > 0 || i.remotes.is-cons
 
 // Public tag chips, each linking to its /tags/<tag> listing. Shown to
 // everyone (tags are public metadata). "" when the item has none.
