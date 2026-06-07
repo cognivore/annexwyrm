@@ -4,21 +4,23 @@ module web/handler/item
 
 import core/types
 import core/json
-import core/url
 import effects/db
 import effects/time
 import effects/rng
 import effects/log
 import effects/config
 import effects/store
+import effects/crypto
 import ap/object
 import ap/outbox
 import ap/persist
 import annex/item
 import annex/publish
 import web/server
+import web/multipart
 import web/html/item
 import web/html/edit
+import interp/str   // byte-count: a total C-backed primitive (see upload.kk)
 
 // Every item is always public: the review renders to ANYONE. There is no
 // owner-only item view and no 404-for-private branch — the only thing that
@@ -83,40 +85,153 @@ pub fun handle-item-edit-form( req : request, id : string )
       Nothing -> not-found("no such item")
       Just(it) -> ok-html(render-edit-form(it, id, load-item-tags(full-id)))
 
-// POST /items/<id>/edit — apply a metadata edit and federate an Update.
-// Owner-gated. Body is application/x-www-form-urlencoded (no file part).
-// Each field defaults to the item's CURRENT value when ABSENT from the
-// form, but a present-but-empty field is an intentional clear (e.g.
-// blanking the title back to "(untitled)"). The file blob and its
-// publication state are never touched here.
+// POST /items/<id>/edit — apply a review edit AND any file change, then
+// federate a single Update. Owner-gated. Body is multipart/form-data so the
+// form can carry an OPTIONAL file part alongside the text fields — the edit
+// page is the one place to manage everything about an item, blob included.
+//
+// Text fields: present-but-empty is an intentional clear (e.g. blanking the
+// title to "(untitled)"); the form always submits them, so the per-field
+// default only matters defensively.
+//
+// File intent, in one place (see apply-file-change):
+//   * attach a file to a file-less review, or replace an existing blob;
+//   * publish it now (public download) or keep it archived (encrypted only);
+//   * later flip a published file back to archived, or an archived one public.
+// The `publish_file` checkbox carries the DESIRED public state; an attached
+// file part optionally (re)places the bytes. A file is ALWAYS archived first
+// (encrypted remote, verified) and is only ever on disk in rclone — never the
+// server's data dir. Retracting a public file DELETES it from the public
+// remote, so the download truly stops (not just a hidden link).
 pub fun handle-item-edit-post( req : request, id : string )
-  : <db,time,rng,log,config,div|e> response
+  : <db,time,rng,log,config,store,crypto,div|e> response
   if !is-owner-session(req) then forbidden("login required")
   else
     val full-id = get-base-url() ++ "/items/" ++ id
     match load-item(full-id)
       Nothing -> not-found("no such item")
       Just(it) ->
-        val form = query-parse(req.body)
-        val name = form-lookup(form, "name").default(it.name)
-        val summary = form-lookup(form, "summary").default(it.summary)
-        val content = form-lookup(form, "content").default(it.content)
-        val rating = clamp-rating(
-          form-lookup(form, "rating").default(it.rating.show).parse-int.default(it.rating))
-        val in-reply-to = form-lookup(form, "in_reply_to").default(it.in-reply-to)
-        val now = now-iso()
-        // Tags: present (even empty) ⇒ replace with the parsed set; absent ⇒
-        // keep the current set. (load-item-tags here reads them BEFORE
-        // save-item's REPLACE; ship-edited-item then writes the final set
-        // AFTER save-item, then federates it.)
-        val new-tags = match form-lookup(form, "tags")
-          Just(tval) -> parse-tags(tval)
-          Nothing    -> load-item-tags(full-id)
-        ship-edited-item(
-          edit-item-fields(it, name, summary, content, rating, in-reply-to, now),
-          new-tags)
-        info("item/edited", [("id", full-id), ("rating", rating.show)])
-        see-other("/items/" ++ id)
+        val ct = req.header("content-type").default("")
+        match parse-multipart(ct, req.body)
+          Nothing -> bad-request("expected multipart/form-data")
+          Just(parts) ->
+            val name = field(parts, "name").default(it.name)
+            val summary = field(parts, "summary").default(it.summary)
+            val content = field(parts, "content").default(it.content)
+            val rating = clamp-rating(
+              field(parts, "rating").default(it.rating.show).parse-int.default(it.rating))
+            val in-reply-to = field(parts, "in_reply_to").default(it.in-reply-to)
+            val want-public = field(parts, "publish_file").is-just
+            // Tags: present (even empty) ⇒ replace with the parsed set; absent
+            // ⇒ keep the current set.
+            val new-tags = match field(parts, "tags")
+              Just(tval) -> parse-tags(tval)
+              Nothing    -> load-item-tags(full-id)
+            val now = now-iso()
+            val base = edit-item-fields(it, name, summary, content, rating, in-reply-to, now)
+            val slug = id-tail(full-id)
+            if apply-file-change(base, it.file-published, files(parts).head, want-public, slug, now, new-tags) then
+              info("item/edited", [("id", full-id), ("rating", rating.show)])
+              see-other("/items/" ++ id)
+            else
+              server-error("file operation failed; the review was not changed")
+
+// Apply the edit's FILE intent on top of the (already text-edited) `base`,
+// PERSIST + federate the result (a single Update via ship-edited-item), and
+// return True — or False if a mandatory store op failed (caller → 5xx,
+// nothing saved). It ships internally rather than returning the built item
+// because returning an annex-item value struct from an effectful body trips
+// koka#654; the struct is built purely and handed to the ()-returning ship.
+//
+//   * a new file part      ⇒ (re)archive the bytes, then publish or not
+//   * no file, has a blob  ⇒ toggle publication to match `want-public`
+//   * no file, file-less   ⇒ nothing to (un)publish; just the text edit
+//
+// `was-published` is the pre-edit publication state (consulted so a replaced /
+// retracted public blob is deleted from the public remote). It is a bool, NOT
+// the whole pre-edit item: capturing a SECOND annex-item value struct across
+// an effectful bind trips koka#654 ("multiple value type fields"). Only `base`
+// (one annex-item) may flow through the effectful body.
+fun apply-file-change(
+    base : annex-item, was-published : bool, new-file : maybe<mpart>,
+    want-public : bool, slug : string, now : iso-time, tags : list<string>
+  ) : <db,time,rng,log,config,store,crypto,div|e> bool
+  match new-file
+    Just(f) ->
+      // (Re)place the blob. The archive put is mandatory and verified, exactly
+      // as on upload: a file that can't be archived must not be recorded.
+      val media = if f.media-type == "" then "application/octet-stream" else f.media-type
+      val sha = b64-encode(sha256(f.body))
+      val byte-size = byte-count(f.body)
+      val archive-loc = Blob-loc(get-archive-remote(), slug)
+      blob-put(archive-loc, f.body)
+      if !blob-has(archive-loc) then
+        error("edit/archive-put-failed",
+          [("remote", get-archive-remote()), ("slug", slug)])
+        False
+      else
+        val archive-remote = Item-remote(
+          RkRclone, get-archive-remote() ++ "/" ++ slug, media,
+          "archive (encrypted)", False, 0)
+        val archived = with-new-blob(base, guess-kind(media), media, byte-size, sha, [archive-remote])
+        if want-public then
+          publish-and-ship(archived, slug, f.body, now, tags)
+        elif was-published && !revoke-public(slug) then
+          // Replacing a previously-published file with a private one, but the
+          // old public copy could NOT be verifiably deleted — fail the edit
+          // rather than claim "private" while the blob stays downloadable. The
+          // item is left untouched (still published), so the owner can retry.
+          False
+        else
+          ship-edited-item(archived, tags)
+          True
+    Nothing ->
+      // No new bytes. Toggle publication on the existing file, if any.
+      if !(base.byte-size > 0 || base.remotes.is-cons) then
+        ship-edited-item(base, tags)
+        True
+      elif want-public == was-published then
+        ship-edited-item(base, tags)
+        True
+      elif want-public then
+        // archived → published: the bytes aren't in memory; read them back.
+        match blob-get(Blob-loc(get-archive-remote(), slug))
+          Nothing ->
+            error("edit/archive-get-failed",
+              [("remote", get-archive-remote()), ("slug", slug)])
+            False
+          Just(bytes) -> publish-and-ship(base, slug, bytes, now, tags)
+      elif revoke-public(slug) then
+        // published → archived: the public blob was VERIFIABLY deleted (revokes
+        // the download); now clear the minted URLs + drop the public mirror.
+        ship-edited-item(archive-only-item(base, now), tags)
+        True
+      else
+        // The public blob could not be verifiably deleted — do NOT mark the
+        // item private (that would claim revocation while the file stays
+        // downloadable). Fail the edit; the item stays published + consistent.
+        False
+
+// Delete the public blob and VERIFY it is actually gone, returning False if it
+// still resolves afterwards. Un-publishing's security promise is REVOCATION,
+// not just hiding the link — a silent `rclone deletefile` failure (transient
+// Drive/network error) would otherwise leave the file downloadable while the
+// DB + federation say "private". The caller turns False into a 5xx and leaves
+// the item published, so the visible state never lies about reachability.
+fun revoke-public( slug : string ) : <log,config,store|e> bool
+  val loc = Blob-loc(get-public-remote(), slug)
+  blob-del(loc)
+  if blob-has(loc) then
+    error("edit/public-delete-failed",
+      [("remote", get-public-remote()), ("slug", slug)])
+    False
+  else
+    True
+
+fun guess-kind( media : string ) : object-kind
+  match media-type/parse(media)
+    Just(mt) -> object-kind/from-media(mt)
+    Nothing  -> OkDocument
 
 // Effectful tail for an edit: persist the already-built item and federate
 // the Update. The item is a PARAMETER (not a local capture) and this
@@ -126,13 +241,6 @@ fun ship-edited-item( it : annex-item, tags : list<string> )
   save-item(it)                 // self-preserves the OLD tags…
   save-item-tags(it.id, tags)   // …which we then override with the edit's set
   emit-update(it)               // emit-update reads item_tag → federates `tags`
-
-// Look up a form field, distinguishing "absent" (Nothing → keep current)
-// from "present but empty" (Just "" → intentional clear).
-fun form-lookup( fs : list<(string,string)>, k : string ) : maybe<string>
-  match fs
-    Nil -> Nothing
-    Cons((k0,v), rest) -> if k0 == k then Just(v) else form-lookup(rest, k)
 
 // ----------------------------------------------------------------------
 //  The publish-file body — shared by upload-with-publish_file and the
@@ -165,6 +273,34 @@ pub fun publish-file-blob( it : annex-item, slug : string, bytes : string )
         val now = now-iso()
         val pub-target = get-public-remote() ++ "/" ++ slug
         ship-published-item(build-published-item(it, pub-target, view, now))
+        True
+
+// Edit-path publish: copy bytes to the public remote, verify, mint the URL,
+// build the published item, and ship it WITH the edit's tag set (one Update).
+// Returns False on a verified store / mint failure. Mirrors publish-file-blob
+// but routes through ship-edited-item so the edit's tags are written too.
+// Per the koka#654 rule, the freshly-built item is never RETURNED from this
+// effectful body — it is built purely and handed to the ()-returning ship.
+fun publish-and-ship(
+    it : annex-item, slug : string, bytes : string, now : iso-time,
+    tags : list<string>
+  ) : <db,time,rng,log,config,store,div|e> bool
+  val public-loc = Blob-loc(get-public-remote(), slug)
+  blob-put(public-loc, bytes)
+  if !blob-has(public-loc) then
+    error("publish-file/public-put-failed",
+      [("remote", get-public-remote()), ("slug", slug)])
+    False
+  else
+    match blob-public-url(public-loc)
+      Nothing ->
+        error("publish-file/link-mint-failed",
+          [("remote", get-public-remote()), ("slug", slug)])
+        False
+      Just(view) ->
+        ship-edited-item(
+          build-published-item(it, get-public-remote() ++ "/" ++ slug, view, now),
+          tags)
         True
 
 // Pure: build the published item value struct (no effects → no mlift, so

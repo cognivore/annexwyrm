@@ -19,7 +19,13 @@ pub fun with-rclone-store( action : () -> <store,shell,config|e> a ) : <shell,co
       val r = run(["rclone", "cat", loc.show], "")
       if r.ok then Just(r.stdout) else Nothing
     fun blob-del(loc : blob-loc)
-      val _ = run(["rclone", "deletefile", loc.show], "")
+      // --drive-use-trash=false: on Google Drive, PERMANENTLY delete the
+      // object instead of moving it to Trash. This is what revokes a public
+      // download when a file is un-published: a trashed Drive file is
+      // recoverable for ~30 days and a previously-minted share link can still
+      // resolve it, so trashing would leave the "private" file reachable. For
+      // non-Drive backends (local, S3, …) rclone accepts the flag as a no-op.
+      val _ = run(["rclone", "deletefile", "--drive-use-trash=false", loc.show], "")
       ()
     fun blob-has(loc : blob-loc)
       val r = run(["rclone", "lsf", loc.show], "")

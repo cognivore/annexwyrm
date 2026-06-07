@@ -162,3 +162,42 @@ pub fun edit-item-fields(
     i.published-at, now,
     i.remotes
   )
+
+// Attach (or replace) a blob on an item that previously had none — or a
+// different one. Sets the byte identity (kind/media/size/hash) and the
+// supplied remote list (the caller passes [archive-remote]); the file starts
+// ARCHIVED — `file-published` is reset to False with no minted URLs, so a
+// freshly-attached file never leaks a download until it is explicitly
+// published. The human-authored review fields and timestamps carry through
+// from `i` (which already holds the edit's text + advanced updated-at).
+// Positional literal (no record-update) to keep koka#654 clear.
+pub fun with-new-blob(
+    i : annex-item, kind : object-kind, media : string,
+    byte-size : int, sha256-hex : string, remotes : list<item-remote>
+  ) : annex-item
+  Annex-item(
+    i.id, i.owner, kind,
+    i.name, i.summary, i.content, media,
+    byte-size, sha256-hex,
+    i.rating, i.in-reply-to,
+    False, "", "",
+    i.published-at, i.updated-at,
+    remotes
+  )
+
+// Retract a published file back to archived. Clears `file-published` and the
+// minted download/viewer URLs, and drops every PUBLISHED mirror remote
+// (keeping the encrypted-archive remote, whose `published` is False) so the
+// item's AP url[]/attachment go empty on the next Update. The effectful blob
+// delete from the public remote is the caller's job — this is the pure state
+// half. Positional literal to keep koka#654 clear.
+pub fun archive-only-item( i : annex-item, now : iso-time ) : annex-item
+  Annex-item(
+    i.id, i.owner, i.kind,
+    i.name, i.summary, i.content, i.media-type,
+    i.byte-size, i.sha256-hex,
+    i.rating, i.in-reply-to,
+    False, "", "",
+    i.published-at, now,
+    i.remotes.filter(fn(r) !r.published)
+  )

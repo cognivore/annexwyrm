@@ -908,22 +908,24 @@ assert_sql "$DB" "SELECT count(*) FROM activity WHERE type='Update' AND object_i
 green "  ✓ review-of is itself editable"
 
 # ===========================================================================
-#  Step L — EDIT encoding round-trips. The edit form is form-urlencoded, the
-#  first path to round-trip rich user text through query-parse/url-decode.
-#  This guards the three bugs the adversarial review surfaced:
-#    (a) multibyte UTF-8 corruption (%C3%A9 is one codepoint 'é', not two),
-#    (b) '+'-as-space + %27-apostrophe (exactly how a browser posts a title
-#        like "Six's Sharpied Kamigawa"),
-#    (c) a 'review of' URL with a query string truncating at the first '='.
+#  Step L — EDIT round-trips through multipart + the DB framing. The edit form
+#  is now multipart/form-data (it can carry a file), so field values ride the
+#  wire VERBATIM (no url-encoding). This guards:
+#    (a) multibyte UTF-8 (accents/emoji) survives multipart byte-exact,
+#    (b) literal spaces + apostrophe + HTML survive (no mangling),
+#    (c) a 'review of' URL with a query string survives whole,
+#    (d) framing-significant control bytes (TAB/0x1E/0x1F) survive the request
+#        framing AND the DB param framing byte-exact.
+#  The url-decode edge cases (+ / %27 / first-'=') move to Step L2 (search),
+#  which still routes through query-parse/url-decode.
 # ===========================================================================
-note "=== Step L — edit encoding round-trips (UTF-8 / + / %27 / =) ==="
+note "=== Step L — edit round-trips (UTF-8 / literals / control bytes via multipart) ==="
 ENC_PATH=$(upload "$SOCK" "$JAR" "$PDF_ONE" "enc seed" "" "<p>seed</p>" "99" "")
 ENC_URL="http://localhost$ENC_PATH"
 ENC_SLUG="${ENC_PATH##*/}"
 
-# (a) UTF-8 title with accents, an em dash, an apostrophe, stars and an
-#     emoji — curl --data-urlencode encodes each UTF-8 byte as %XX, the
-#     same bytes a browser sends. Must round-trip byte-exact (no mojibake).
+# (a) UTF-8 title with accents, an em dash, an apostrophe, stars and an emoji —
+#     --form-string sends the raw UTF-8 bytes; multipart must preserve them.
 UTITLE="Café déjà — Six's ★★ 🎴"
 edit_item "$SOCK" "$JAR" "$ENC_SLUG" "$UTITLE" "" "<p>seed</p>" "2" "" >/dev/null
 assert_sql "$DB" "SELECT name FROM item WHERE id='$ENC_URL';" \
@@ -932,45 +934,47 @@ ENC_HTML=$(fetch_html_anon "$SOCK" "$ENC_PATH")
 assert_grep "$ENC_HTML" "Café déjà" "accented title renders on the page"
 assert_grep "$ENC_HTML" "🎴" "emoji in the title renders on the page"
 
-# (b) the browser wire form: spaces as '+', apostrophe as %27, HTML as
-#     percent-escapes. Hand-built body (NOT --data-urlencode) to exercise
-#     the '+' path that --data-urlencode (which uses %20) would not.
-curl --silent --output /dev/null --unix-socket "$SOCK" --cookie "$JAR" \
-     --data 'name=Six%27s+Sharpied+Kamigawa&summary=&content=%3Cp%3Ex%3C%2Fp%3E&rating=2&in_reply_to=' \
-     "http://x/items/$ENC_SLUG/edit"
+# (b) literal spaces, apostrophe, and HTML in the title/content survive
+#     multipart verbatim (no '+'/escape interpretation in a multipart part).
+edit_item "$SOCK" "$JAR" "$ENC_SLUG" "Six's Sharpied Kamigawa" "" "<p>x</p>" "2" "" >/dev/null
 assert_sql "$DB" "SELECT name FROM item WHERE id='$ENC_URL';" \
-    "Six's Sharpied Kamigawa" "'+'→space and %27→apostrophe (browser form encoding)"
+    "Six's Sharpied Kamigawa" "literal title (spaces + apostrophe) round-trips"
 assert_sql "$DB" "SELECT content FROM item WHERE id='$ENC_URL';" \
-    "<p>x</p>" "percent-escaped HTML content decodes"
+    "<p>x</p>" "literal HTML content round-trips"
 
-# (c) a review-of URL carrying a query string must survive whole — split on
-#     the FIRST '=' only, not every '='.
+# (c) a review-of URL carrying a query string must survive whole.
 QURL="https://cubecobra.com/cube/list/abc?view=table&sort=cmc"
-curl --silent --output /dev/null --unix-socket "$SOCK" --cookie "$JAR" \
-     --data-urlencode "name=$UTITLE" --data-urlencode "summary=" \
-     --data-urlencode "content=<p>seed</p>" --data-urlencode "rating=2" \
-     --data-urlencode "in_reply_to=$QURL" \
-     "http://x/items/$ENC_SLUG/edit"
+edit_item "$SOCK" "$JAR" "$ENC_SLUG" "$UTITLE" "" "<p>seed</p>" "2" "$QURL" >/dev/null
 assert_sql "$DB" "SELECT in_reply_to FROM item WHERE id='$ENC_URL';" \
-    "$QURL" "review-of URL with query '=' is not truncated"
+    "$QURL" "review-of URL with query '=' survives whole"
 
 # (d) DB param/result FRAMING: a stored text value containing the framing-
 #     significant control bytes (TAB 0x09, 0x1E, 0x1F) must round-trip
-#     byte-exact through the param encode (db-escape) → C bind → SQLite → C
-#     query (escape) → parse-cell (db-unescape). Pre-fix, a raw 0x1E in a
-#     value truncated/shifted the binds. Send them percent-encoded; read back
-#     and compare with a hexdump so control bytes are visible.
-CTRL_CONTENT="A%09B%1eC%1fD-end"   # A<TAB>B<0x1E>C<0x1F>D-end
-curl --silent --output /dev/null --unix-socket "$SOCK" --cookie "$JAR" \
-     --data-urlencode "name=ctl" --data-urlencode "summary=" \
-     --data "content=$CTRL_CONTENT" --data-urlencode "rating=2" \
-     --data-urlencode "in_reply_to=" \
-     "http://x/items/$ENC_SLUG/edit"
+#     byte-exact through the request framing (socket_server split-limit, body
+#     is the last field) AND the param encode → C bind → SQLite → C query →
+#     parse-cell. Sent as LITERAL bytes in the multipart part — strictly
+#     stronger than the old percent-encoded form. Read back as hex.
+CTRL_CONTENT=$(printf 'A\tB\x1eC\x1fD-end')   # A<TAB>B<0x1E>C<0x1F>D-end
+edit_item "$SOCK" "$JAR" "$ENC_SLUG" "ctl" "" "$CTRL_CONTENT" "2" "" >/dev/null
 GOT_HEX=$(sqlite3 "$DB" "SELECT hex(content) FROM item WHERE id='$ENC_URL';")
 WANT_HEX="4109421E431F442D656E64"   # "A\tB\x1eC\x1fD-end"
 [ "$GOT_HEX" = "$WANT_HEX" ] \
-    && green "  ✓ control bytes (TAB/0x1E/0x1F) round-trip byte-exact through the DB framing" \
-    || { red "DB framing corrupted control bytes: got $GOT_HEX want $WANT_HEX"; exit 1; }
+    && green "  ✓ control bytes (TAB/0x1E/0x1F) round-trip byte-exact through request + DB framing" \
+    || { red "framing corrupted control bytes: got $GOT_HEX want $WANT_HEX"; exit 1; }
+
+# ===========================================================================
+#  Step L2 — query-parse / url-decode edge cases via SEARCH (the path that
+#  still url-decodes a query string): multibyte UTF-8, '+'-as-space, and a
+#  %27 apostrophe. The search page echoes the decoded query in its heading +
+#  box, so a correct decode is visible in the rendered HTML.
+# ===========================================================================
+note "=== Step L2 — url-decode edge cases via /search?q= ==="
+# UTF-8 (%C3%A9 is ONE codepoint 'é', not two) + '+'→space.
+SQ_HTML=$(fetch_html_anon "$SOCK" "/search?q=Caf%C3%A9+d%C3%A9j%C3%A0")
+assert_grep "$SQ_HTML" "Café déjà" "search decodes UTF-8 and '+'→space (no mojibake)"
+# %27 → apostrophe, HTML-escaped on render.
+SQ_HTML2=$(fetch_html_anon "$SOCK" "/search?q=Six%27s")
+assert_grep "$SQ_HTML2" "Six&#39;s" "search decodes %27 → apostrophe (then HTML-escaped)"
 
 # ===========================================================================
 #  Step M — edit a PUBLISHED review. The first real prod review is published
@@ -982,8 +986,12 @@ note "=== Step M — edit a published review keeps its download link ==="
 M_PRE_URL=$(sqlite3 "$DB" "SELECT file_public_url FROM item WHERE id='$ARCH_URL';")
 [ -n "$M_PRE_URL" ] || { red "precondition: ARCH item should have a public URL by now"; exit 1; }
 sleep 1
+# The edit form's publish_file checkbox is pre-checked for a published item, so
+# a browser edit submits publish_file=1 → the file stays published. We pass the
+# "publish" flag to simulate that pre-checked state (omitting it would, by
+# design, un-publish — the checkbox is the authoritative desired state).
 edit_item "$SOCK" "$JAR" "$ARCH_SLUG" \
-    "Published And Edited" "" "<p>edited published body</p>" "3" "" >/dev/null
+    "Published And Edited" "" "<p>edited published body</p>" "3" "" "" "" "publish" >/dev/null
 assert_sql "$DB" "SELECT name FROM item WHERE id='$ARCH_URL';" \
     "Published And Edited" "published item's title edited"
 assert_sql "$DB" "SELECT rating FROM item WHERE id='$ARCH_URL';" \
@@ -1172,6 +1180,131 @@ printf '%s' "$AFTER_DETAILS" | grep -q '<section class="content">' \
     || { red "body content is not inside the spoiler details"; exit 1; }
 if printf '%s' "$BEFORE_DETAILS" | grep -q '<section class="content">'; then
     red "body content also renders OUTSIDE the spoiler (not hidden)"; exit 1; fi
+
+# ===========================================================================
+#  Step R — FILE LIFECYCLE FROM THE EDIT FORM. The edit page manages the blob
+#  too: attach a file to a file-less review (archived), publish it, then make
+#  it private again. Every transition holds the security invariants — the blob
+#  lives only in rclone (never $DATA), an archived/retracted file leaks no
+#  download to anon (HTML + AP), and un-publishing DELETES the public copy
+#  (revokes access, not just hides the link).
+# ===========================================================================
+note "=== Step R — manage the file from the edit form ==="
+# A file-less review to attach a file to.
+RF_HDR=$(mktemp)
+curl -s -o /dev/null -D "$RF_HDR" --unix-socket "$SOCK" --cookie "$JAR" \
+  --form-string "name=Little Fires" --form-string "summary=" \
+  --form-string "content=A review that will gain a file." \
+  --form-string "rating=1" --form-string "in_reply_to=https://bookwyrm.social/book/2000" \
+  "http://x/upload"
+RF_PATH=$(grep -i '^location:' "$RF_HDR" | sed -E 's/^[^:]*:[[:space:]]*//' | tr -d '\r'); rm -f "$RF_HDR"
+RF_URL="http://localhost$RF_PATH"; RF_SLUG="${RF_PATH##*/}"
+green "  file-less review: $RF_PATH (slug $RF_SLUG)"
+assert_sql "$DB" "SELECT byte_size FROM item WHERE id='$RF_URL';" "0" "starts file-less"
+UPD0=$(sqlite3 "$DB" "SELECT count(*) FROM activity WHERE type='Update' AND object_id='$RF_URL';")
+
+# --- R1: attach a PRIVATE file via edit (file part, no publish) ---
+R1=$(edit_item "$SOCK" "$JAR" "$RF_SLUG" "Little Fires" "" \
+     "A review that will gain a file." "1" "https://bookwyrm.social/book/2000" "" "$PDF_ONE")
+[ "${R1%%$'\t'*}" = "303" ] || { red "R1 attach: expected 303, got ${R1%%$'\t'*}"; exit 1; }
+green "  ✓ R1 attach-private → 303"
+assert_sql "$DB" "SELECT (byte_size>0) FROM item WHERE id='$RF_URL';" "1" "R1: file now has bytes"
+assert_sql "$DB" "SELECT file_published FROM item WHERE id='$RF_URL';" "0" "R1: file archived (not published)"
+assert_sql "$DB" "SELECT (file_public_url IS NULL OR file_public_url='') FROM item WHERE id='$RF_URL';" "1" "R1: no public URL"
+assert_sql "$DB" "SELECT count(*) FROM item_remote WHERE item_id='$RF_URL';" "1" "R1: only the archive remote"
+assert_sql "$DB" "SELECT count(*) FROM activity WHERE type='Update' AND object_id='$RF_URL';" "$((UPD0+1))" "R1: one Update federated"
+if [ "$USE_GDRIVE" != "1" ]; then
+    [ -f "$ARCHIVE_REMOTE/$RF_SLUG" ] || { red "R1: archive blob missing"; exit 1; }
+    cmp -s "$ARCHIVE_REMOTE/$RF_SLUG" "$PDF_ONE" || { red "R1: archive blob bytes differ"; exit 1; }
+    green "  ✓ R1: archived blob present in rclone backend == plaintext"
+    [ -f "$PUBLIC_REMOTE/$RF_SLUG" ] && { red "R1: public remote has the blob (must be archived only)"; exit 1; }
+    green "  ✓ R1: public remote does NOT have the blob"
+fi
+if find "$DATA" -type f -exec cmp -s {} "$PDF_ONE" \; -print 2>/dev/null | grep -q .; then
+    red "R1: blob persisted on server data dir — must be rclone-only"; exit 1; fi
+green "  ✓ R1: blob not on server data dir"
+R1_HTML=$(fetch_html_anon "$SOCK" "$RF_PATH")
+assert_grep "$R1_HTML" "file archived, not published" "R1: archived file-state line to anon"
+if printf '%s' "$R1_HTML" | grep -q 'class="download"'; then red "R1: archived page leaked a download anchor"; exit 1; fi
+green "  ✓ R1: no download anchor for the archived file"
+R1_AP=$(fetch_ap_anon "$SOCK" "$RF_PATH")
+if printf '%s' "$R1_AP" | grep -qF '"attachment"'; then red "R1: archived item federated an attachment"; exit 1; fi
+green "  ✓ R1: archived item federates no attachment"
+
+# --- R2: PUBLISH the file via edit (publish checkbox, no new file) ---
+R2=$(edit_item "$SOCK" "$JAR" "$RF_SLUG" "Little Fires" "" \
+     "A review that will gain a file." "1" "https://bookwyrm.social/book/2000" "" "" "publish")
+[ "${R2%%$'\t'*}" = "303" ] || { red "R2 publish: expected 303, got ${R2%%$'\t'*}"; exit 1; }
+green "  ✓ R2 publish → 303"
+assert_sql "$DB" "SELECT file_published FROM item WHERE id='$RF_URL';" "1" "R2: file is published"
+assert_sql "$DB" "SELECT (file_public_url IS NOT NULL AND file_public_url != '') FROM item WHERE id='$RF_URL';" "1" "R2: public URL minted"
+assert_sql "$DB" "SELECT count(*) FROM item_remote WHERE item_id='$RF_URL';" "2" "R2: archive + public remotes"
+assert_sql "$DB" "SELECT count(*) FROM activity WHERE type='Update' AND object_id='$RF_URL';" "$((UPD0+2))" "R2: second Update federated"
+# PROVE the published object is actually SERVABLE from the public remote the
+# same way prod serves it — through rclone (the exact tool that talks to Google
+# Drive in production), not a filesystem stat. These checks run for BOTH the
+# local-temp backend AND a real `gdrive:` remote (ANNEXWYRM_E2E_GDRIVE=1), so on
+# the gdrive suite this exercises Google Drive itself.
+rclone cat "$PUBLIC_REMOTE/$RF_SLUG" > "$TMP/r2.dl" 2>/dev/null \
+    || { red "R2: rclone cannot fetch the published blob from the public remote"; exit 1; }
+cmp -s "$TMP/r2.dl" "$PDF_ONE" || { red "R2: fetched public blob bytes != original"; exit 1; }
+green "  ✓ R2: published blob is fetchable from the public remote (rclone) and == original"
+rclone lsf "$PUBLIC_REMOTE" 2>/dev/null | grep -qx "$RF_SLUG" \
+    || { red "R2: public remote does not list the published blob"; exit 1; }
+green "  ✓ R2: public remote lists the published object"
+R2_HTML=$(fetch_html_anon "$SOCK" "$RF_PATH")
+assert_grep "$R2_HTML" 'class="download"' "R2: download anchor now shown to anon"
+R2_AP=$(fetch_ap_anon "$SOCK" "$RF_PATH")
+assert_grep "$R2_AP" '"type":"Document"' "R2: published file federates as a Document attachment"
+
+# --- R3: make it PRIVATE again via edit (uncheck publish, no new file) ---
+R3=$(edit_item "$SOCK" "$JAR" "$RF_SLUG" "Little Fires" "" \
+     "A review that will gain a file." "1" "https://bookwyrm.social/book/2000" "")
+[ "${R3%%$'\t'*}" = "303" ] || { red "R3 unpublish: expected 303, got ${R3%%$'\t'*}"; exit 1; }
+green "  ✓ R3 make-private → 303"
+assert_sql "$DB" "SELECT file_published FROM item WHERE id='$RF_URL';" "0" "R3: file archived again"
+assert_sql "$DB" "SELECT (file_public_url IS NULL OR file_public_url='') FROM item WHERE id='$RF_URL';" "1" "R3: public URL cleared"
+assert_sql "$DB" "SELECT count(*) FROM item_remote WHERE item_id='$RF_URL';" "1" "R3: public mirror dropped (archive only)"
+assert_sql "$DB" "SELECT count(*) FROM activity WHERE type='Update' AND object_id='$RF_URL';" "$((UPD0+3))" "R3: third Update federated"
+# ★ THE INVARIANT THAT MATTERS MOST ★ — making a file private must ERASE it from
+# the public backend, not merely hide the link. Prove it the way a downloader
+# (or Google Drive) sees it: the object is no longer fetchable AND no longer
+# listed via rclone. (blob-del runs `rclone deletefile --drive-use-trash=false`,
+# so on Drive it is permanently deleted — no recoverable Trash, dead share link.)
+if rclone cat "$PUBLIC_REMOTE/$RF_SLUG" >/dev/null 2>&1; then
+    red "R3: public object STILL FETCHABLE via rclone after make-private — NOT revoked"; exit 1; fi
+green "  ✓ R3: public object no longer fetchable from the backend (download path is dead)"
+if rclone lsf "$PUBLIC_REMOTE" 2>/dev/null | grep -qx "$RF_SLUG"; then
+    red "R3: public remote still lists the object after make-private"; exit 1; fi
+green "  ✓ R3: public remote no longer lists the object (erased, not hidden)"
+# …but the ENCRYPTED ARCHIVE copy must survive byte-identical — data is never
+# lost, only the public exposure is revoked.
+rclone cat "$ARCHIVE_REMOTE/$RF_SLUG" > "$TMP/r3.arch" 2>/dev/null \
+    || { red "R3: archive blob unfetchable — must always survive"; exit 1; }
+cmp -s "$TMP/r3.arch" "$PDF_ONE" || { red "R3: archive blob changed/corrupted on make-private"; exit 1; }
+green "  ✓ R3: encrypted archive copy survives byte-identical (data retained, exposure revoked)"
+R3_HTML=$(fetch_html_anon "$SOCK" "$RF_PATH")
+if printf '%s' "$R3_HTML" | grep -q 'class="download"'; then red "R3: still shows a download anchor after make-private"; exit 1; fi
+green "  ✓ R3: download anchor gone from the page"
+R3_AP=$(fetch_ap_anon "$SOCK" "$RF_PATH")
+if printf '%s' "$R3_AP" | grep -qF '"attachment"'; then red "R3: still federates an attachment after make-private"; exit 1; fi
+for needle in "uc?export=download" "$PUBLIC_REMOTE" "drive.google.com"; do
+    if printf '%s' "$R3_AP" | grep -qF "$needle"; then red "R3: AP JSON still leaks a public-blob reference: $needle"; exit 1; fi
+done
+green "  ✓ R3: attachment + all public-blob references retracted from federation"
+
+# --- R4: re-publish after private. The object must come BACK and be fetchable
+#         again — proving R3 genuinely DELETED it (re-publish had to re-create
+#         it), and that the public↔private cycle is repeatable. ---
+R4=$(edit_item "$SOCK" "$JAR" "$RF_SLUG" "Little Fires" "" \
+     "A review that will gain a file." "1" "https://bookwyrm.social/book/2000" "" "" "publish")
+[ "${R4%%$'\t'*}" = "303" ] || { red "R4 re-publish: expected 303, got ${R4%%$'\t'*}"; exit 1; }
+green "  ✓ R4 re-publish → 303"
+assert_sql "$DB" "SELECT file_published FROM item WHERE id='$RF_URL';" "1" "R4: file is published again"
+rclone cat "$PUBLIC_REMOTE/$RF_SLUG" > "$TMP/r4.dl" 2>/dev/null \
+    || { red "R4: re-published object not fetchable from the public remote"; exit 1; }
+cmp -s "$TMP/r4.dl" "$PDF_ONE" || { red "R4: re-published bytes != original"; exit 1; }
+green "  ✓ R4: re-publish re-creates a fresh, fetchable public object (cycle is repeatable)"
 
 # ===========================================================================
 #  Step Q — PAGINATION. The public archive paginates at items-per-page (50)

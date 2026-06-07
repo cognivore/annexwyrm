@@ -102,20 +102,24 @@ post_action() {
 # --data-urlencode, NOT multipart. Args:
 #   sock jar slug name summary content rating in_reply_to
 # Returns "<http_code>\t<location>".
+# edit_item SOCK JAR SLUG NAME SUMMARY CONTENT RATING IN_REPLY_TO [TAGS] [FILE] [PUBLISH]
+# POSTs the edit as multipart/form-data (the endpoint now accepts an optional
+# file part). FILE (a path) attaches/replaces the blob; PUBLISH="publish" ticks
+# the publish_file checkbox. Echoes "STATUS<TAB>LOCATION".
 edit_item() {
     local sock="$1" jar="$2" slug="$3"
     local name="$4" summary="$5" content="$6" rating="$7" in_reply_to="$8"
-    local tags="${9:-}"
+    local tags="${9:-}" file="${10:-}" publish="${11:-}"
     local hdr; hdr=$(mktemp)
+    local args=(--form-string "name=$name" --form-string "summary=$summary"
+                --form-string "content=$content" --form-string "rating=$rating"
+                --form-string "in_reply_to=$in_reply_to" --form-string "tags=$tags")
+    [ -n "$file" ] && args+=(--form "file=@$file")
+    [ "$publish" = "publish" ] && args+=(--form-string "publish_file=1")
     local code
     code=$(curl --silent --show-error \
                 --unix-socket "$sock" --cookie "$jar" \
-                --data-urlencode "name=$name" \
-                --data-urlencode "summary=$summary" \
-                --data-urlencode "content=$content" \
-                --data-urlencode "rating=$rating" \
-                --data-urlencode "in_reply_to=$in_reply_to" \
-                --data-urlencode "tags=$tags" \
+                "${args[@]}" \
                 --output /dev/null --dump-header "$hdr" \
                 --write-out '%{http_code}' \
                 "http://x/items/$slug/edit")
@@ -132,7 +136,7 @@ edit_item_anon() {
     local sock="$1" slug="$2"
     curl --silent --output /dev/null --write-out '%{http_code}' \
          --unix-socket "$sock" \
-         --data-urlencode "name=HACKED BY ANON" \
+         --form-string "name=HACKED BY ANON" \
          "http://x/items/$slug/edit"
 }
 

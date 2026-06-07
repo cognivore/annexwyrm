@@ -1,15 +1,16 @@
 // annexwyrm/web/html/edit — the owner's "edit review" form.
 //
-// Single-tenant public review site: editing changes only the human-
-// authored review metadata (title, abstract/CW, body HTML, rating, and
-// the review-of target). It does NOT touch the file blob — that is the
-// separate, one-way publish-file action on the item page. Submitting this
-// form federates an AP `Update` to followers.
+// The edit page is the single place to manage an item: its human-authored
+// review metadata (title, abstract/CW, body Markdown, rating, review-of
+// target) AND its file blob. From here the owner can attach a file to a
+// file-less review, replace an existing blob, and flip the file between
+// archived (encrypted remote only, no download) and published (public
+// download). Submitting federates an AP `Update`.
 //
-// The form is plain application/x-www-form-urlencoded (no file part), so
-// it needs no enctype — exactly like /login. Every field is pre-filled
-// with the item's current value; an empty title posts back as "" (a
-// deliberate clearing), which renders as "(untitled)".
+// The form is multipart/form-data (it can carry a file part). Every text
+// field is pre-filled; an empty title posts back as "" (a deliberate
+// clearing → "(untitled)"). The `publish file` checkbox is pre-checked to
+// reflect the file's CURRENT publication state.
 
 module web/html/edit
 
@@ -20,7 +21,7 @@ import web/html/layout
 pub fun render-edit-form( i : annex-item, id : string, tags : list<string> ) : string
   val body = ([
     "<h1>edit review</h1>",
-    "<form action=\"/items/" ++ esc(id) ++ "/edit\" method=\"post\">",
+    "<form action=\"/items/" ++ esc(id) ++ "/edit\" method=\"post\" enctype=\"multipart/form-data\">",
     "  <fieldset>",
     "    <legend>the review</legend>",
     "    <label>title: <input type=\"text\" name=\"name\" value=\"" ++
@@ -34,6 +35,19 @@ pub fun render-edit-form( i : annex-item, id : string, tags : list<string> ) : s
       "\" placeholder=\"mtg kamigawa game-design\"></label>",
     "  </fieldset>",
     "  <fieldset>",
+    "    <legend>the file</legend>",
+    "    <p class=\"hint\">" ++ file-state-line(i) ++ "</p>",
+    "    <label>" ++ (if has-file(i) then "replace file" else "attach a file") ++
+      " (optional): <input type=\"file\" name=\"file\"></label>",
+    "    <label><input type=\"checkbox\" name=\"publish_file\" value=\"1\"" ++
+      (if i.file-published then " checked" else "") ++
+      "> file is publicly downloadable</label>",
+    "    <p class=\"hint\">ticked = the blob is copied to the public remote, a download " ++
+      "link is minted, and it federates. unticked = archived only (encrypted remote, no " ++
+      "public download). un-ticking a published file <strong>deletes</strong> it from the " ++
+      "public remote — the download stops. the encrypted archive copy always stays.</p>",
+    "  </fieldset>",
+    "  <fieldset>",
     "    <legend>rating &amp; review</legend>",
     "    <label>rating:",
     "      <select name=\"rating\">",
@@ -43,15 +57,23 @@ pub fun render-edit-form( i : annex-item, id : string, tags : list<string> ) : s
     "    <label>review of (full item URL): <input type=\"url\" name=\"in_reply_to\" value=\"" ++
       esc(i.in-reply-to) ++ "\" placeholder=\"https://server/items/abc123\"></label>",
     "  </fieldset>",
-    "  <p class=\"hint\">saving federates an <strong>Update</strong> to your followers. " ++
-      "the file blob is untouched — use <em>publish file</em> on the item page to change " ++
-      "whether the file itself is downloadable.</p>",
+    "  <p class=\"hint\">saving federates an <strong>Update</strong> to your followers.</p>",
     "  <button type=\"submit\">save changes</button>",
     "  <a class=\"cancel\" href=\"/items/" ++ esc(id) ++ "\">cancel</a>",
     "</form>"
   ]).join("\n")
   layout("edit — annexwyrm", "",
     "<a href=\"/items/" ++ esc(id) ++ "\">item</a> · edit", body)
+
+// True iff this item actually has a file blob (vs a pure-text review).
+fun has-file( i : annex-item ) : bool
+  i.byte-size > 0 || i.remotes.is-cons
+
+// One line describing the file's current state, shown above the controls.
+fun file-state-line( i : annex-item ) : string
+  if !has-file(i) then "currently: <em>no file</em> — this is a text-only review."
+  elif i.file-published then "currently: <em>published</em> — the file is publicly downloadable."
+  else "currently: <em>archived</em> — encrypted remote only, no public download."
 
 // The rating <select> options, with the item's current value marked
 // `selected`. Mirrors the upload form's option set; value 99 = unrated.
