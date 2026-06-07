@@ -27,6 +27,7 @@ import web/handler/nodeinfo
 import web/handler/item
 import web/handler/upload
 import web/handler/login
+import web/handler/settings
 import web/handler/follow
 import web/handler/search
 
@@ -100,6 +101,8 @@ pub fun dispatch( req : request )
     // Auth ----------------------------------------------------------------
     ("GET",    Cons("login", Nil))  -> handle-login-form(req)
     ("POST",   Cons("login", Nil))  -> handle-login-post(req)
+    ("GET",    Cons("settings", Nil)) -> handle-settings-form(req)
+    ("POST",   Cons("settings", Nil)) -> handle-settings-post(req)
     ("POST",   Cons("logout", Nil)) -> handle-logout(req)
 
     // Follow / unfollow ---------------------------------------------------

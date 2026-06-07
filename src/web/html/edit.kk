@@ -1,16 +1,17 @@
 // annexwyrm/web/html/edit — the owner's "edit review" form.
 //
 // The edit page is the single place to manage an item: its human-authored
-// review metadata (title, abstract/CW, body Markdown, rating, review-of
-// target) AND its file blob. From here the owner can attach a file to a
-// file-less review, replace an existing blob, and flip the file between
-// archived (encrypted remote only, no download) and published (public
-// download). Submitting federates an AP `Update`.
+// review metadata (title, spoiler-free review, in-depth Markdown review,
+// rating, the reference URL) AND its file blob. From here the owner can
+// attach a file to a file-less review, replace an existing blob, and flip
+// the file between archived (encrypted remote only, no download) and
+// published (public download). Submitting federates an AP `Update`.
 //
 // The form is multipart/form-data (it can carry a file part). Every text
-// field is pre-filled; an empty title posts back as "" (a deliberate
-// clearing → "(untitled)"). The `publish file` checkbox is pre-checked to
-// reflect the file's CURRENT publication state.
+// field is pre-filled; the `publicly downloadable` checkbox is pre-checked
+// to reflect the file's CURRENT publication state. Sections mirror the
+// upload form: "media" then "reference & rating" (URL first, tags on
+// their own row), one full-width field per row.
 
 module web/html/edit
 
@@ -18,24 +19,13 @@ import core/types
 import annex/item
 import web/html/layout
 
-pub fun render-edit-form( i : annex-item, id : string, tags : list<string> ) : string
+pub fun render-edit-form( i : annex-item, id : string, tags : list<string>,
+                          max-width : string = "1080px" ) : string
   val body = ([
     "<h1>edit review</h1>",
     "<form action=\"/items/" ++ esc(id) ++ "/edit\" method=\"post\" enctype=\"multipart/form-data\">",
     "  <fieldset>",
-    "    <legend>the review</legend>",
-    "    <label>title: <input type=\"text\" name=\"name\" value=\"" ++
-      esc(i.name) ++ "\" placeholder=\"(untitled)\"></label>",
-    "    <label>content warning / abstract: <textarea name=\"summary\" rows=\"2\">" ++
-      esc(i.summary) ++ "</textarea></label>",
-    "    <label>description / review body (Markdown — **bold**, *italic*, [links](url), lists, # headings): " ++
-      "<textarea name=\"content\" rows=\"8\">" ++ esc(i.content) ++ "</textarea></label>",
-    "    <label>tags (space- or comma-separated, # optional): " ++
-      "<input type=\"text\" name=\"tags\" value=\"" ++ esc(tags.join(" ")) ++
-      "\" placeholder=\"mtg kamigawa game-design\"></label>",
-    "  </fieldset>",
-    "  <fieldset>",
-    "    <legend>the file</legend>",
+    "    <legend>media</legend>",
     "    <p class=\"hint\">" ++ file-state-line(i) ++ "</p>",
     "    <label>" ++ (if has-file(i) then "replace file" else "attach a file") ++
       " (optional): <input type=\"file\" name=\"file\"></label>",
@@ -46,16 +36,25 @@ pub fun render-edit-form( i : annex-item, id : string, tags : list<string> ) : s
       "link is minted, and it federates. unticked = archived only (encrypted remote, no " ++
       "public download). un-ticking a published file <strong>deletes</strong> it from the " ++
       "public remote — the download stops. the encrypted archive copy always stays.</p>",
+    "    <label>title: <input type=\"text\" name=\"name\" required value=\"" ++
+      esc(i.name) ++ "\" placeholder=\"the work's title\"></label>",
+    "    <label>spoiler-free review: <textarea name=\"summary\" rows=\"2\">" ++
+      esc(i.summary) ++ "</textarea></label>",
+    "    <label>in-depth review (markdown): <textarea name=\"content\" rows=\"8\">" ++
+      esc(i.content) ++ "</textarea></label>",
     "  </fieldset>",
     "  <fieldset>",
-    "    <legend>rating &amp; review</legend>",
+    "    <legend>reference &amp; rating</legend>",
+    "    <label>reference URL: <input type=\"url\" name=\"in_reply_to\" value=\"" ++
+      esc(i.in-reply-to) ++ "\" placeholder=\"https://bookwyrm.social/book/12345 — the work this reviews\"></label>",
     "    <label>rating:",
     "      <select name=\"rating\">",
     rating-options(i.rating),
     "      </select>",
     "    </label>",
-    "    <label>review of (full item URL): <input type=\"url\" name=\"in_reply_to\" value=\"" ++
-      esc(i.in-reply-to) ++ "\" placeholder=\"https://server/items/abc123\"></label>",
+    "    <label>tags (space- or comma-separated, # optional): " ++
+      "<input type=\"text\" name=\"tags\" value=\"" ++ esc(tags.join(" ")) ++
+      "\" placeholder=\"mtg kamigawa game-design\"></label>",
     "  </fieldset>",
     "  <p class=\"hint\">saving federates an <strong>Update</strong> to your followers.</p>",
     "  <button type=\"submit\">save changes</button>",
@@ -63,7 +62,7 @@ pub fun render-edit-form( i : annex-item, id : string, tags : list<string> ) : s
     "</form>"
   ]).join("\n")
   layout("edit — annexwyrm", "",
-    "<a href=\"/items/" ++ esc(id) ++ "\">item</a> · edit", body)
+    "<a href=\"/items/" ++ esc(id) ++ "\">item</a> · edit", body, max-width)
 
 // True iff this item actually has a file blob (vs a pure-text review).
 fun has-file( i : annex-item ) : bool

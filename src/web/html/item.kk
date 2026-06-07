@@ -16,7 +16,7 @@ import annex/publish
 import web/html/layout
 
 pub fun render-item-page( i : annex-item, likes : int, shares : int, is-owner : bool,
-                          tags : list<string> ) : div string
+                          tags : list<string>, max-width : string = "1080px" ) : div string
   val followers = i.owner ++ "/followers"
   val obj = item-to-ap-object(i, followers, tags)
   val jsonld = json/show(ap-object/to-json(obj))
@@ -24,7 +24,7 @@ pub fun render-item-page( i : annex-item, likes : int, shares : int, is-owner : 
   val body = ([
     "<article class=\"item\">",
     review-of-block(i),
-    "  <h1>" ++ esc(title) ++ rating-badge(i) ++ "</h1>",
+    "  <h1>" ++ heading-sentence(i, title) ++ "</h1>",
     "  <p class=\"meta\">",
     "    <span class=\"kind\">[" ++ esc(i.kind.show.to-lower) ++ "]</span>",
     "    <span class=\"author\">by <a href=\"" ++ esc(i.owner) ++ "\">" ++ esc(i.owner) ++ "</a></span>",
@@ -37,7 +37,7 @@ pub fun render-item-page( i : annex-item, likes : int, shares : int, is-owner : 
     owner-actions-block(i, is-owner),
     "</article>"
   ]).join("\n")
-  layout(title, jsonld, "<a href=\"/items/\">items</a> · " ++ esc(title), body)
+  layout(title, jsonld, "<a href=\"/items/\">items</a> · " ++ esc(title), body, max-width)
 
 // "review of <link>" preamble if this item references another resource. The
 // href is scheme-guarded (safe-url): a non-http(s) value like javascript: is
@@ -51,15 +51,22 @@ fun review-of-block( i : annex-item ) : string
   else
     "  <p class=\"review-of\">review of " ++ esc(i.in-reply-to) ++ "</p>"
 
-// The rating in the title line: just the plain-English phrase, coloured by
-// direction (positive/negative/neutral). No stars, no numeric score.
-fun rating-badge( i : annex-item ) : string
-  if !i.has-rating then ""
+// The page heading as a rating SENTENCE around the emphasised medium name:
+// "disliked <em>The Appeal</em> a lot" — verb first, never "The Appeal
+// disliked a lot". The verb and qualifier are coloured by direction; the
+// medium name is <em> for clarity. Unrated ⇒ just the escaped title.
+fun heading-sentence( i : annex-item, title : string ) : string
+  val medium = "<em class=\"medium\">" ++ esc(title) ++ "</em>"
+  if !i.has-rating then esc(title)
   else
+    val (verb, qual) = rating-parts(i.rating)
     val css = if i.rating > 0 then "positive"
               elif i.rating < 0 then "negative"
               else "neutral"
-    " <span class=\"rating " ++ css ++ "\">" ++ esc(rating-phrase(i.rating)) ++ "</span>"
+    val pre = "<span class=\"rating " ++ css ++ "\">" ++ verb ++ "</span> "
+    val post = if qual == "" then ""
+               else " <span class=\"rating " ++ css ++ "\">" ++ qual ++ "</span>"
+    pre ++ medium ++ post
 
 // The review body: Markdown-rendered content, and — when a content warning /
 // abstract (summary) is set — wrapped in a <details> so the body is HIDDEN

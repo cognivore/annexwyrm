@@ -13,12 +13,13 @@ import effects/rng
 import effects/log
 import effects/config
 import effects/crypto
+import web/prefs
 import web/server
 import web/html/login
 import web/multipart
 
 pub fun handle-login-form( req : request ) : <db,config|e> response
-  ok-html(render-login-form(""))
+  ok-html(render-login-form("", get-page-width()))
 
 pub fun handle-login-post( req : request )
   : <db,time,rng,log,config,crypto,div|e> response
@@ -26,7 +27,7 @@ pub fun handle-login-post( req : request )
   val username = form-get(form, "username")
   val password = form-get(form, "password")
   if username == "" || password == "" then
-    ok-html(render-login-form("missing fields"))
+    ok-html(render-login-form("missing fields", get-page-width()))
   else
     val rows = query(
       "SELECT a.id, l.password_hash FROM actor a " ++
@@ -35,12 +36,12 @@ pub fun handle-login-post( req : request )
       [txt(username)]
     )
     match rows
-      Nil -> ok-html(render-login-form("invalid credentials"))
+      Nil -> ok-html(render-login-form("invalid credentials", get-page-width()))
       Cons(r, _) ->
         val aid = text(r.col(0))
         val phc = text(r.col(1))
         if !argon2id-verify(phc, password) then
-          ok-html(render-login-form("invalid credentials"))
+          ok-html(render-login-form("invalid credentials", get-page-width()))
         else
           val tok = rand-hex(32)
           val now = now-iso()

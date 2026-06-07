@@ -13,7 +13,8 @@ import web/html/home
 // current page; `page`/`total`/`size` drive the page controls. The page-link
 // base preserves the query: `/search?q=<encoded>&page=`.
 pub fun render-search( q : string, rows : list<home-row>,
-                       page : int, total : int, size : int ) : string
+                       page : int, total : int, size : int,
+                       max-width : string = "1080px" ) : string
   val heading = if q == "" then "search"
                 else "results for “" ++ esc(q) ++ "”"
   val body = ([
@@ -22,11 +23,12 @@ pub fun render-search( q : string, rows : list<home-row>,
     results-or-empty(rows, "no matches."),
     pagination("/search?q=" ++ url-encode(q) ++ "&page=", page, total, size)
   ]).join("\n")
-  layout("search — annexwyrm", "", "<a href=\"/\">archive</a> · search", body)
+  layout("search — annexwyrm", "", "<a href=\"/\">archive</a> · search", body, max-width)
 
 // A single tag's items, paginated. The page-link base is `/tags/<encoded>?page=`.
 pub fun render-tag( tag : string, rows : list<home-row>,
-                    page : int, total : int, size : int ) : string
+                    page : int, total : int, size : int,
+                    max-width : string = "1080px" ) : string
   val body = ([
     "<h1>#" ++ esc(tag) ++ "</h1>",
     search-box(""),
@@ -35,10 +37,11 @@ pub fun render-tag( tag : string, rows : list<home-row>,
     "<p class=\"back\"><a href=\"/tags\">all tags</a></p>"
   ]).join("\n")
   layout("#" ++ tag ++ " — annexwyrm", "",
-    "<a href=\"/\">archive</a> · <a href=\"/tags\">tags</a> · #" ++ esc(tag), body)
+    "<a href=\"/\">archive</a> · <a href=\"/tags\">tags</a> · #" ++ esc(tag), body, max-width)
 
 // The tag index / cloud: every tag with its item count, biggest first.
-pub fun render-tags-index( pairs : list<(string,int)> ) : string
+pub fun render-tags-index( pairs : list<(string,int)>,
+                           max-width : string = "1080px" ) : string
   val cloud = match pairs
     Nil -> "<p class=\"empty\">no tags yet.</p>"
     _   -> "<ul class=\"tag-cloud\">\n" ++
@@ -48,7 +51,7 @@ pub fun render-tags-index( pairs : list<(string,int)> ) : string
     search-box(""),
     cloud
   ]).join("\n")
-  layout("tags — annexwyrm", "", "<a href=\"/\">archive</a> · tags", body)
+  layout("tags — annexwyrm", "", "<a href=\"/\">archive</a> · tags", body, max-width)
 
 fun tag-cloud-item( p : (string,int) ) : string
   val (tag, n) = p

@@ -4,7 +4,7 @@ module web/html/login
 
 import web/html/layout
 
-pub fun render-login-form( err : string ) : string
+pub fun render-login-form( err : string, max-width : string = "1080px" ) : string
   val body = ([
     "<h1>log in</h1>",
     err-block(err),
@@ -14,7 +14,7 @@ pub fun render-login-form( err : string ) : string
     "  <button type=\"submit\">log in</button>",
     "</form>"
   ]).join("\n")
-  layout("log in — annexwyrm", "", "<a href=\"/login\">login</a>", body)
+  layout("log in — annexwyrm", "", "<a href=\"/login\">login</a>", body, max-width)
 
 fun err-block( err : string ) : string
   if err == "" then "" else "<p class=\"err\">" ++ esc(err) ++ "</p>"

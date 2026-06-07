@@ -29,6 +29,7 @@ import effects/crypto
 import annex/item
 import ap/outbox
 import ap/persist
+import web/prefs
 import web/server
 import web/multipart
 import web/html/upload
@@ -37,7 +38,7 @@ import interp/str   // byte-count: a total C-backed primitive (see below)
 
 pub fun handle-upload-form( req : request ) : <db,config|e> response
   if !is-owner-session(req) then forbidden("login required")
-  else ok-html(render-upload-form())
+  else ok-html(render-upload-form(get-page-width()))
 
 pub fun handle-upload-post( req : request )
   : <db,time,rng,log,config,store,crypto,div|e> response

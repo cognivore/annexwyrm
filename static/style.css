@@ -25,7 +25,9 @@ html {
 }
 
 body {
-    max-width: 720px;
+    /* Default responsiveness mode; layout.kk emits a per-setting override
+     * (860px / 1080px / 1440px / none) in a <style> after this sheet. */
+    max-width: 1080px;
     margin: 0 auto;
     padding: 0 12px;
 }
@@ -146,18 +148,33 @@ fieldset {
     padding: 8px 12px;
 }
 legend       { font-weight: bold; padding: 0 4px; }
-label        { display: block; margin: 6px 0; }
+/* One field per row: every label is a full-width block and its control
+ * spans the whole row (the URL input included — no more cramped inline
+ * fields wrapping into each other on narrow screens). */
+label        { display: block; margin: 10px 0; width: 100%; }
 label > input,
 label > textarea,
 label > select {
+    display: block;
     width: 100%;
     box-sizing: border-box;
     font: inherit;
-    padding: 3px 4px;
+    padding: 4px 6px;
+    margin-top: 3px;
     border: 1px solid var(--border);
     background: #fffbe6;
 }
 label > textarea { font-family: Menlo, Consolas, monospace; }
+/* …except checkboxes, which sit inline before their caption. */
+label > input[type="checkbox"] {
+    display: inline-block;
+    width: auto;
+    margin: 0 6px 0 0;
+    vertical-align: middle;
+}
+/* The medium's name inside a rating sentence ("disliked <em>X</em> a lot"). */
+em.medium { font-style: italic; }
+em.medium a { font-style: italic; }
 button {
     font: inherit;
     padding: 4px 14px;

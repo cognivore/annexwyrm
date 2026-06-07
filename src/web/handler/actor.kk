@@ -11,6 +11,7 @@ import core/json
 import effects/db
 import effects/config
 import ap/actor
+import web/prefs
 import web/server
 import web/html/actor
 
@@ -21,7 +22,7 @@ pub fun handle-actor( req : request, u : string )
     val a = load-local-actor()
     if prefers-jsonld(req)
       then ok-jsonld(json/show(ap-actor/to-json(a)))
-      else ok-html(render-actor-page(a, recent-items()))
+      else ok-html(render-actor-page(a, recent-items(), get-page-width()))
 
 // Load the canonical local actor row from the DB.
 pub fun load-local-actor() : <db,config|e> ap-actor

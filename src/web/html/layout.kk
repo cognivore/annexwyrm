@@ -14,11 +14,19 @@ import core/types
 //                 type="application/ld+json"> when non-empty
 //   crumbs      — breadcrumb HTML to put in the header
 //   inner       — the page body
+//   max-width   — the container width ("responsiveness mode"): a CSS
+//                 max-width value for <body> ("860px"/"1080px"/"1440px"/
+//                 "none"). Handlers read the persisted setting (the
+//                 `setting` table, key container_width) and thread it in;
+//                 the default matches the site default of 1080px. Emitted
+//                 as a <style> AFTER the stylesheet link so it wins the
+//                 same-specificity body rule.
 pub fun layout(
-    title    : string,
-    jsonld   : string,
-    crumbs   : string,
-    inner    : string
+    title     : string,
+    jsonld    : string,
+    crumbs    : string,
+    inner     : string,
+    max-width : string = "1080px"
   ) : string
   ([
     "<!doctype html>",
@@ -28,6 +36,7 @@ pub fun layout(
     "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
     "  <title>" ++ esc(title) ++ "</title>",
     "  <link rel=\"stylesheet\" href=\"/static/style.css\">",
+    "  <style>body{max-width:" ++ esc(max-width) ++ "}</style>",
     embed-jsonld(jsonld),
     "</head>",
     "<body>",
@@ -37,6 +46,7 @@ pub fun layout(
     "  <span class=\"nav\">",
     "    <a href=\"/\">archive</a> ·",
     "    <a href=\"/upload\">upload</a> ·",
+    "    <a href=\"/settings\">settings</a> ·",
     "    <a href=\"/login\">login</a>",
     "  </span>",
     "</header>",

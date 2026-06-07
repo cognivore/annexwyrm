@@ -459,8 +459,9 @@ HOME_HTML=$(fetch_html_anon "$SOCK" "/")
 assert_grep "$HOME_HTML" "Review: praise PDF one"            "review A title on home"
 assert_grep "$HOME_HTML" "Review: praise PDF two even more"  "review B title on home"
 assert_grep "$HOME_HTML" "Archived PDF"                      "archived item appears on home (no WHERE filter)"
-assert_grep "$HOME_HTML" "liked it a lot" "rating +2 shown in words on home"
-assert_grep "$HOME_HTML" "loved it"       "rating +3 shown in words on home"
+assert_grep "$HOME_HTML" 'rating positive">liked</span>' "rating +2 verb precedes the medium on home"
+assert_grep "$HOME_HTML" 'rating positive">a lot</span>' "rating +2 qualifier follows the medium on home"
+assert_grep "$HOME_HTML" 'rating positive">loved</span>' "rating +3 verb shown on home (sentence form)"
 assert_grep "$HOME_HTML" 'class="rating positive"' "positive-rating css class"
 # The published item carries the [file] marker; no privacy word ever appears.
 assert_grep "$HOME_HTML" '\[file\]' "published item shows the [file] marker"
@@ -473,12 +474,13 @@ green "  ✓ no privacy word on the home list"
 note "  review B page contains the hyperlink + rating word + review-of"
 REVIEW_B_HTML=$(fetch_html_anon "$SOCK" "$REVIEW_B_PATH")
 assert_grep "$REVIEW_B_HTML" "href=\"$TWO_URL\"" "hyperlink to PDF two"
-assert_grep "$REVIEW_B_HTML" "loved it"          "rating +3 reads 'loved it' (words only)"
+assert_grep "$REVIEW_B_HTML" 'rating positive">loved</span> <em class="medium">' "rating +3 reads 'loved <em>medium</em>' (verb first)"
 assert_grep "$REVIEW_B_HTML" "review of"          "review-of badge"
 
 note "  review A page rates +2 and links to PDF one"
 REVIEW_A_HTML=$(fetch_html_anon "$SOCK" "$REVIEW_A_PATH")
-assert_grep "$REVIEW_A_HTML" "liked it a lot" "rating +2 reads 'liked it a lot' (words only)"
+assert_grep "$REVIEW_A_HTML" 'rating positive">liked</span> <em class="medium">' "rating +2 verb precedes the emphasised medium"
+assert_grep "$REVIEW_A_HTML" 'rating positive">a lot</span>' "rating +2 qualifier follows the medium"
 assert_grep "$REVIEW_A_HTML" "$ARCH_URL" "review A links to PDF one"
 
 note "  every item is reachable anonymously (no 404-for-private)"
@@ -881,7 +883,7 @@ K_HTML=$(fetch_html_anon "$SOCK" "$REV_PATH")
 assert_grep "$K_HTML" "Six&#39;s Sharpied Kamigawa" "edited review title renders (apostrophe escaped)"
 assert_grep "$K_HTML" "review of <a href=\"$REV_PARENT\"" "review-of preamble survives the edit"
 # rating is shown in plain WORDS only — no stars, no numeric score.
-assert_grep "$K_HTML" "liked it a lot" "rating shown in words (+2 = 'liked it a lot')"
+assert_grep "$K_HTML" 'rating positive">liked</span> <em class="medium">' "rating +2 sentence (verb first, medium emphasised)"
 if printf '%s' "$K_HTML" | grep -qE '★|☆|of ±3'; then
     red "rating still renders stars or a numeric score"; exit 1; fi
 green "  ✓ rating is words only (no stars, no score)"
@@ -1003,10 +1005,10 @@ assert_sql "$DB" "SELECT file_public_url FROM item WHERE id='$ARCH_URL';" \
 M_HTML=$(fetch_html_anon "$SOCK" "$ARCH_PATH")
 assert_grep "$M_HTML" 'class="download"'  "published+edited page still shows the download link"
 assert_grep "$M_HTML" "Published And Edited" "published+edited title renders"
-assert_grep "$M_HTML" "loved it" "rating +3 reads 'loved it' in words"
+assert_grep "$M_HTML" 'rating positive">loved</span> <em class="medium">' "rating +3 sentence on the item page"
 # the home list also describes ratings in words, not bare stars.
 M_HOME=$(fetch_html_anon "$SOCK" "/")
-assert_grep "$M_HOME" "loved it" "home list shows the rating in words"
+assert_grep "$M_HOME" 'rating positive">loved</span>' "home list shows the rating sentence verb"
 
 # ===========================================================================
 #  Step N — TAGS + SEARCH. Upload with tags; assert normalisation, the item
@@ -1384,6 +1386,36 @@ assert_grep "$PG999" 'pgitem-01'                    "clamped page still lists it
 PG0=$(fetch_html_anon "$SOCK" "/?page=0")
 assert_grep "$PG0" 'aria-current="page">1<'        "?page=0 clamps to page 1"
 green "  ✓ pagination cursor clamps both ends"
+
+# ===========================================================================
+#  Step S — RESPONSIVENESS MODES. The container max-width is a persisted,
+#  owner-only setting (860px / 1080px / 1440px / unlimited->none), default
+#  1080px, emitted by layout as an inline <style> override on EVERY page.
+#  The POST validates against the closed set — the stored value lands inside
+#  a <style> block, so free-form CSS must never persist.
+# ===========================================================================
+note "=== Step S — responsiveness modes (container width setting) ==="
+S_HOME=$(fetch_html_anon "$SOCK" "/")
+assert_grep "$S_HOME" '<style>body{max-width:1080px}</style>' "default container width is 1080px"
+S_ANON_GET=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" "http://x/settings")
+[ "$S_ANON_GET" = "403" ] || { red "anon GET /settings expected 403, got $S_ANON_GET"; exit 1; }
+S_ANON_POST=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" --data "width=1440px" "http://x/settings")
+[ "$S_ANON_POST" = "403" ] || { red "anon POST /settings expected 403, got $S_ANON_POST"; exit 1; }
+green "  ✓ /settings is owner-only (anon GET + POST → 403)"
+S_FORM=$(fetch_html "$SOCK" "$JAR" "/settings")
+assert_grep "$S_FORM" '<select name="width">' "settings form renders the width selector"
+assert_grep "$S_FORM" '<option value="1080px" selected>' "current mode (1080px) pre-selected"
+S_POST=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" --cookie "$JAR" --data "width=1440px" "http://x/settings")
+[ "$S_POST" = "303" ] || { red "owner POST width=1440px expected 303, got $S_POST"; exit 1; }
+assert_grep "$(fetch_html_anon "$SOCK" "/")" '<style>body{max-width:1440px}</style>' "container width switches to 1440px site-wide"
+curl -s -o /dev/null --unix-socket "$SOCK" --cookie "$JAR" --data "width=none" "http://x/settings"
+assert_grep "$(fetch_html_anon "$SOCK" "/")" '<style>body{max-width:none}</style>' "unlimited mode renders max-width:none"
+S_BAD=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" --cookie "$JAR" --data "width=666px;background:url(x)" "http://x/settings")
+[ "$S_BAD" = "400" ] || { red "bogus width expected 400, got $S_BAD"; exit 1; }
+assert_sql "$DB" "SELECT value FROM setting WHERE key='container_width';" "none" "bogus width NOT stored (no CSS injection into <style>)"
+green "  ✓ width modes validate against the closed set"
+curl -s -o /dev/null --unix-socket "$SOCK" --cookie "$JAR" --data "width=1080px" "http://x/settings"
+assert_grep "$(fetch_html_anon "$SOCK" "/")" '<style>body{max-width:1080px}</style>' "container width restored to the 1080px default"
 
 green ""
 green "=========================================="

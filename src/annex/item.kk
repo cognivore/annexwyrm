@@ -102,6 +102,20 @@ pub fun rating-phrase( r : int ) : string
   elif r == -3 then "hated it"
   else ""
 
+// The rating as a SENTENCE around the medium's name: the two fragments that
+// go before and after it — ("disliked","a lot") renders as
+// "disliked <em>The Appeal</em> a lot", never "The Appeal disliked a lot".
+// ("","") for unrated / out-of-range (callers then show just the name).
+pub fun rating-parts( r : int ) : (string, string)
+  if r == 3 then ("loved", "")
+  elif r == 2 then ("liked", "a lot")
+  elif r == 1 then ("liked", "")
+  elif r == 0 then ("neutral about", "")
+  elif r == -1 then ("disliked", "")
+  elif r == -2 then ("disliked", "a lot")
+  elif r == -3 then ("hated", "")
+  else ("", "")
+
 // Signed numeral for the rating: "+2", "0", "-3". "" for unrated.
 pub fun rating-signed( r : int ) : string
   if r == rating-unrated then ""

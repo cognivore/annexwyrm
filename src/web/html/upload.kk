@@ -6,27 +6,34 @@
 // the encrypted archive and no download link is published; checked, it is
 // also copied to the public remote and a download link is minted and
 // federated. No JavaScript, no per-item privacy, no manual mirror rows.
+//
+// Layout: one field per row, every control full-width (style.css makes
+// label a block and its input span the row), so the form reads top-to-
+// bottom on any screen. Two sections: "media" (the work + the reviews of
+// it) and "reference & rating" (the canonical URL first, then the score,
+// then tags on their own row).
 
 module web/html/upload
 
 import web/html/layout
 
-pub fun render-upload-form() : string
+pub fun render-upload-form( max-width : string = "1080px" ) : string
   val body = ([
     "<h1>upload</h1>",
     "<form action=\"/upload\" method=\"post\" enctype=\"multipart/form-data\">",
     "  <fieldset>",
-    "    <legend>the file</legend>",
+    "    <legend>media</legend>",
     "    <label>file (optional): <input type=\"file\" name=\"file\"></label>",
-    "    <p class=\"hint\">leave the file empty for a pure text review (e.g. a book) — fill in <em>review of</em> with the work's URL.</p>",
-    "    <label>title (optional): <input type=\"text\" name=\"name\" placeholder=\"defaults to filename\"></label>",
-    "    <label>content warning / abstract: <textarea name=\"summary\" rows=\"2\"></textarea></label>",
-    "    <label>description / review body (Markdown — **bold**, *italic*, [links](url), lists, # headings): <textarea name=\"content\" rows=\"5\"></textarea></label>",
+    "    <p class=\"hint\">leave the file empty for a pure text review (e.g. a book) — fill in the <em>reference URL</em> below with the work's URL.</p>",
+    "    <label>title: <input type=\"text\" name=\"name\" required placeholder=\"the work's title\"></label>",
+    "    <label>spoiler-free review: <textarea name=\"summary\" rows=\"2\"></textarea></label>",
+    "    <label>in-depth review (markdown): <textarea name=\"content\" rows=\"8\" placeholder=\"**bold**, *italic*, [links](url), lists, # headings\"></textarea></label>",
     "    <p class=\"hint\">the file is always copied to the <strong>encrypted archive</strong>. tick <em>publish file now</em> only if you want the blob itself downloadable: that also copies it to the public remote, mints a shareable download link, and federates it. left unticked the file stays archived — the review is published, the download is not.</p>",
     "    <label><input type=\"checkbox\" name=\"publish_file\" value=\"1\"> publish file now (default: archive only, no public download)</label>",
     "  </fieldset>",
     "  <fieldset>",
-    "    <legend>rating &amp; review</legend>",
+    "    <legend>reference &amp; rating</legend>",
+    "    <label>reference URL: <input type=\"url\" name=\"in_reply_to\" placeholder=\"https://bookwyrm.social/book/12345 — the work this reviews\"></label>",
     "    <label>rating:",
     "      <select name=\"rating\">",
     "        <option value=\"99\" selected>unrated</option>",
@@ -39,10 +46,9 @@ pub fun render-upload-form() : string
     "        <option value=\"-3\">hated it</option>",
     "      </select>",
     "    </label>",
-    "    <label>review of (full item URL): <input type=\"url\" name=\"in_reply_to\" placeholder=\"https://server/items/abc123\"></label>",
     "    <label>tags (space- or comma-separated, # optional): <input type=\"text\" name=\"tags\" placeholder=\"mtg kamigawa game-design\"></label>",
     "  </fieldset>",
     "  <button type=\"submit\">save</button>",
     "</form>"
   ]).join("\n")
-  layout("upload — annexwyrm", "", "<a href=\"/upload\">upload</a>", body)
+  layout("upload — annexwyrm", "", "<a href=\"/upload\">upload</a>", body, max-width)

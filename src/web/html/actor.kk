@@ -14,7 +14,8 @@ pub value struct recent-row
   kind      : string
   published : string
 
-pub fun render-actor-page( a : ap-actor, recents : list<recent-row> ) : div string
+pub fun render-actor-page( a : ap-actor, recents : list<recent-row>,
+                           max-width : string = "1080px" ) : div string
   val title = if a.name == "" then a.preferred-username else a.name
   val jsonld = json/show(ap-actor/to-json(a))
   val body = ([
@@ -39,7 +40,7 @@ pub fun render-actor-page( a : ap-actor, recents : list<recent-row> ) : div stri
     "  </form>",
     "</section>"
   ]).join("\n")
-  layout(title, jsonld, "<a href=\"/users/" ++ esc(a.preferred-username) ++ "\">" ++ esc(a.preferred-username) ++ "</a>", body)
+  layout(title, jsonld, "<a href=\"/users/" ++ esc(a.preferred-username) ++ "\">" ++ esc(a.preferred-username) ++ "</a>", body, max-width)
 
 fun recents-block( rs : list<recent-row> ) : string
   match rs

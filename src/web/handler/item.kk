@@ -16,6 +16,7 @@ import ap/outbox
 import ap/persist
 import annex/item
 import annex/publish
+import web/prefs
 import web/server
 import web/multipart
 import web/html/item
@@ -41,7 +42,7 @@ pub fun handle-item( req : request, id : string )
         val likes = count-likes(full-id)
         val shares = count-shares(full-id)
         val owner = is-owner-session(req)
-        ok-html(render-item-page(it, likes, shares, owner, tags))
+        ok-html(render-item-page(it, likes, shares, owner, tags, get-page-width()))
 
 // POST /items/<id>/publish-file — open the archived file to the public.
 // Owner-gated, idempotent, and one-way for v1: it copies the blob to the
@@ -121,7 +122,7 @@ pub fun handle-item-edit-form( req : request, id : string )
     val full-id = get-base-url() ++ "/items/" ++ id
     match load-item(full-id)
       Nothing -> not-found("no such item")
-      Just(it) -> ok-html(render-edit-form(it, id, load-item-tags(full-id)))
+      Just(it) -> ok-html(render-edit-form(it, id, load-item-tags(full-id), get-page-width()))
 
 // POST /items/<id>/edit — apply a review edit AND any file change, then
 // federate a single Update. Owner-gated. Body is multipart/form-data so the

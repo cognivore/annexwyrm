@@ -13,7 +13,9 @@ set -euo pipefail
 #   - install koka 3.2.3 linux-x64 to /usr/local
 #   - /etc/annexwyrm/env  -> ANNEXWYRM_PASSWORD=<rageveil annexwyrm.localhost/sweater/password> (root,600)
 #   - /etc/systemd/system/annexwyrm.service (serve on /run/annexwyrm/sock; ExecStartPre runs init)
-#   - nginx site /etc/nginx/sites-available/wyrm-fere (:80 acme+redirect, :443 -> unix socket)
+#   - nginx site /etc/nginx/sites-available/wyrm-fere (:80 acme+redirect, :443 -> unix socket,
+#       PLUS `location /static/ { alias /opt/annexwyrm/static/; }` — the app has no
+#       /static route, so without it every page renders unstyled)
 #   - certbot certonly --webroot -w /var/www/html -d wyrm.fere.me
 #   - Porkbun A record wyrm.fere.me -> 46.62.199.15
 #

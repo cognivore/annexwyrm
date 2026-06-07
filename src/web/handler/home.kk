@@ -9,6 +9,7 @@ import core/types
 import core/url
 import effects/db
 import effects/config
+import web/prefs
 import web/server
 import web/html/home
 
@@ -44,7 +45,7 @@ pub fun handle-home( req : request ) : <db,config,div|e> response
       published      = text(r.col(5)),
       file-published = intval(r.col(6)) != 0
     ))
-    ok-html(render-home(items, get-instance-name(), page, total, size))
+    ok-html(render-home(items, get-instance-name(), page, total, size, get-page-width()))
 
 fun text( v : sql-value ) : string
   match v { SqlText(s) -> s; _ -> "" }

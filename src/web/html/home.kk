@@ -22,7 +22,8 @@ pub value struct home-row
   file-published : bool          // True ⇒ the blob has a public download
 
 pub fun render-home( rows : list<home-row>, instance-name : string,
-                     page : int, total : int, size : int ) : string
+                     page : int, total : int, size : int,
+                     max-width : string = "1080px" ) : string
   val body = ([
     "<h1>" ++ esc(instance-name) ++ "</h1>",
     "<p class=\"subtitle\">a federated archive — pieces dropped here are mirrored, optionally shared.</p>",
@@ -30,7 +31,7 @@ pub fun render-home( rows : list<home-row>, instance-name : string,
     items-list(rows),
     pagination("/?page=", page, total, size)
   ]).join("\n")
-  layout(instance-name, "", "<a href=\"/\">archive</a>", body)
+  layout(instance-name, "", "<a href=\"/\">archive</a>", body, max-width)
 
 // Page controls beneath a listing. `base` is the href prefix up to and
 // including "page=" — the caller composes any other query params first (e.g.
@@ -102,35 +103,46 @@ fun items-list( rows : list<home-row> ) : string
       rows.map(item-row).join("\n") ++
       "\n</ol>"
 
+// A row reads as a SENTENCE around the medium's (linked, emphasised) title:
+// "disliked <em>The Appeal</em> a lot" — the verb comes FIRST, never
+// "The Appeal disliked a lot". Unrated rows show just the linked title.
 fun item-row( r : home-row ) : string
   val path = "/items/" ++ id-tail(r.id)
+  val link = "<a class=\"title\" href=\"" ++ esc(path) ++ "\">" ++ esc-title(r.name) ++ "</a>"
   val rev  = if r.in-reply-to == "" then "" else " <span class=\"meta\">[review]</span>"
   val file = if r.file-published then " <span class=\"meta\">[file]</span>" else ""
   "<li class=\"item-row\">" ++
     "<span class=\"kind\">[" ++ esc(r.kind.to-lower) ++ "]</span> " ++
-    row-rating(r.rating) ++
-    "<a class=\"title\" href=\"" ++ esc(path) ++ "\">" ++ esc-title(r.name) ++ "</a>" ++
+    rating-sentence(r.rating, "<em class=\"medium\">" ++ link ++ "</em>") ++
     rev ++ file ++
     " <span class=\"meta\">" ++ esc(r.published) ++ "</span>" ++
   "</li>"
 
-fun row-rating( r : int ) : string
-  if r == 99 || r < -3 || r > 3 then ""
+// Wrap `medium-html` (the already-escaped, possibly linked title) in the
+// rating sentence: coloured verb before, coloured qualifier after —
+// "<verb> <em>medium</em> [<qualifier>]". Unrated ⇒ just the medium.
+fun rating-sentence( r : int, medium-html : string ) : string
+  val (verb, qual) = parts-pure(r)
+  if verb == "" then medium-html
   else
     val css = if r > 0 then "positive" elif r < 0 then "negative" else "neutral"
-    "<span class=\"rating " ++ css ++ "\">" ++ phrase-pure(r) ++ "</span> "
+    val pre = "<span class=\"rating " ++ css ++ "\">" ++ verb ++ "</span> "
+    val post = if qual == "" then ""
+               else " <span class=\"rating " ++ css ++ "\">" ++ qual ++ "</span>"
+    pre ++ medium-html ++ post
 
-// Pure helper duplicated from annex/item to avoid a dependency cycle —
-// the html layer should not see the domain. Kept in sync by convention.
-fun phrase-pure( r : int ) : string
-  if r == 3 then "loved it"
-  elif r == 2 then "liked it a lot"
-  elif r == 1 then "liked it"
-  elif r == 0 then "neutral"
-  elif r == -1 then "disliked it"
-  elif r == -2 then "disliked it a lot"
-  elif r == -3 then "hated it"
-  else ""
+// Pure helper duplicated from annex/item's rating-parts to avoid a
+// dependency cycle — the html layer should not see the domain. Kept in
+// sync by convention.
+fun parts-pure( r : int ) : (string, string)
+  if r == 3 then ("loved", "")
+  elif r == 2 then ("liked", "a lot")
+  elif r == 1 then ("liked", "")
+  elif r == 0 then ("neutral about", "")
+  elif r == -1 then ("disliked", "")
+  elif r == -2 then ("disliked", "a lot")
+  elif r == -3 then ("hated", "")
+  else ("", "")
 
 fun esc-title( s : string ) : string
   if s == "" then "(untitled)" else esc(s)
