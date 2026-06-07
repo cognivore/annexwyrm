@@ -27,7 +27,7 @@ pub fun render-edit-form( i : annex-item, id : string, tags : list<string> ) : s
       esc(i.name) ++ "\" placeholder=\"(untitled)\"></label>",
     "    <label>content warning / abstract: <textarea name=\"summary\" rows=\"2\">" ++
       esc(i.summary) ++ "</textarea></label>",
-    "    <label>description / review body (HTML, hyperlinks welcome): " ++
+    "    <label>description / review body (Markdown — **bold**, *italic*, [links](url), lists, # headings): " ++
       "<textarea name=\"content\" rows=\"8\">" ++ esc(i.content) ++ "</textarea></label>",
     "    <label>tags (space- or comma-separated, # optional): " ++
       "<input type=\"text\" name=\"tags\" value=\"" ++ esc(tags.join(" ")) ++

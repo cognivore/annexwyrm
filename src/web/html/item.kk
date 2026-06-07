@@ -9,6 +9,7 @@ module web/html/item
 
 import core/types
 import core/json
+import core/markdown
 import ap/object
 import annex/item
 import annex/publish
@@ -30,8 +31,7 @@ pub fun render-item-page( i : annex-item, likes : int, shares : int, is-owner : 
     "    <span class=\"date\">" ++ esc(i.published-at) ++ "</span>",
     "    <span class=\"stats\">" ++ likes.show ++ " likes · " ++ shares.show ++ " shares</span>",
     "  </p>",
-    summary-block(i),
-    content-block(i),
+    body-block(i),
     tags-block(tags),
     file-state-block(i, is-owner),
     owner-actions-block(i, is-owner),
@@ -39,11 +39,17 @@ pub fun render-item-page( i : annex-item, likes : int, shares : int, is-owner : 
   ]).join("\n")
   layout(title, jsonld, "<a href=\"/items/\">items</a> · " ++ esc(title), body)
 
-// "review of <link>" preamble if this item points at another item.
+// "review of <link>" preamble if this item references another resource. The
+// href is scheme-guarded (safe-url): a non-http(s) value like javascript: is
+// rendered as plain escaped text, never a clickable anchor (HTML-escaping
+// alone leaves a live javascript: link).
 fun review-of-block( i : annex-item ) : string
   if i.in-reply-to == "" then ""
-  else "  <p class=\"review-of\">review of " ++
-       "<a href=\"" ++ esc(i.in-reply-to) ++ "\">" ++ esc(i.in-reply-to) ++ "</a></p>"
+  elif safe-url(i.in-reply-to) then
+    "  <p class=\"review-of\">review of " ++
+    "<a href=\"" ++ esc(i.in-reply-to) ++ "\" rel=\"nofollow\">" ++ esc(i.in-reply-to) ++ "</a></p>"
+  else
+    "  <p class=\"review-of\">review of " ++ esc(i.in-reply-to) ++ "</p>"
 
 // The rating in the title line: just the plain-English phrase, coloured by
 // direction (positive/negative/neutral). No stars, no numeric score.
@@ -55,14 +61,17 @@ fun rating-badge( i : annex-item ) : string
               else "neutral"
     " <span class=\"rating " ++ css ++ "\">" ++ esc(rating-phrase(i.rating)) ++ "</span>"
 
-fun summary-block( i : annex-item ) : string
-  if i.summary == "" then ""
-  else "  <details class=\"cw\"><summary>" ++ esc(i.summary) ++
-       "</summary><p></p></details>"
-
-fun content-block( i : annex-item ) : string
-  if i.content == "" then ""
-  else "  <section class=\"content\">" ++ i.content ++ "</section>"
+// The review body: Markdown-rendered content, and — when a content warning /
+// abstract (summary) is set — wrapped in a <details> so the body is HIDDEN
+// behind the spoiler until the reader clicks it. Without a summary the body
+// renders open. (Previously the CW was an empty <details> next to an always-
+// visible body, so it hid nothing.)
+fun body-block( i : annex-item ) : div string
+  val rendered = if i.content == "" then ""
+                 else "<section class=\"content\">" ++ md-to-html(i.content) ++ "</section>"
+  if i.summary == "" then rendered
+  else "  <details class=\"cw\"><summary>" ++ esc(i.summary) ++ "</summary>\n" ++
+       rendered ++ "\n  </details>"
 
 // The file-state block: archived vs published.
 //   * Archived (file-published = False): a quiet no-link state. The owner

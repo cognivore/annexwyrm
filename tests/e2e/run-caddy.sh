@@ -667,7 +667,7 @@ green "  ✓ owner pre-publish: no download anchor on the archived page"
 note "STEP 10 — review of public PDF (+2)"
 upload_tcp "$JAR" "$PDF_PUBLIC" \
     "Review: praise public PDF" "" \
-    "<p>Praise public PDF. A perfectly reasonable read.</p>" \
+    "Praise public PDF. A perfectly reasonable read." \
     "2" "$PUBLIC_URL"
 REVIEW_A_PATH="$UPLOAD_LOCATION"
 REV_A_UP_HEADERS="$UPLOAD_HEADERS"
@@ -685,7 +685,8 @@ assert_sql "SELECT in_reply_to FROM item WHERE name LIKE 'Review: praise public%
 #  STEP 11 — review of the private PDF, rating +3, with a hyperlink in body.
 # ===========================================================================
 note "STEP 11 — review of private PDF (+3) with hyperlink"
-REVIEW_B_CONTENT="<p>Praise private PDF <em>even more</em> — it builds upon the ideas from <a href=\"$PRIVATE_URL\">privatePDF</a>.</p>"
+# Markdown: *italic* and a [text](url) link — render to <em> and <a>.
+REVIEW_B_CONTENT="Praise private PDF *even more* — it builds upon the ideas from [privatePDF]($PRIVATE_URL)."
 upload_tcp "$JAR" "$PDF_PRIVATE" \
     "Review: praise private PDF even more" "" "$REVIEW_B_CONTENT" \
     "3" "$PRIVATE_URL"
@@ -719,8 +720,8 @@ REVIEW_B_HTML="$(fetch_html_anon_tcp "$REVIEW_B_PATH")"
 # review-of preamble with hyperlinked URL == the in-reply-to target.
 assert_grep "$REVIEW_B_HTML" 'class="review-of"' "review-of preamble class"
 assert_grep "$REVIEW_B_HTML" 'review of' "review-of preamble text"
-assert_grep "$REVIEW_B_HTML" "<p class=\"review-of\">review of <a href=\"$PRIVATE_URL\">" \
-    "review-of preamble links to \$PRIVATE_URL"
+assert_grep "$REVIEW_B_HTML" "<p class=\"review-of\">review of <a href=\"$PRIVATE_URL\" rel=\"nofollow\">" \
+    "review-of preamble links to \$PRIVATE_URL (scheme-guarded, nofollow)"
 # Rating badge — words only, coloured by direction.
 assert_grep "$REVIEW_B_HTML" 'class="rating positive"' "rating positive class (+3)"
 assert_grep "$REVIEW_B_HTML" 'loved it' "rating +3 shown in words ('loved it')"

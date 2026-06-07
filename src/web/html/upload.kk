@@ -20,7 +20,7 @@ pub fun render-upload-form() : string
     "    <label>file: <input type=\"file\" name=\"file\" required></label>",
     "    <label>title (optional): <input type=\"text\" name=\"name\" placeholder=\"defaults to filename\"></label>",
     "    <label>content warning / abstract: <textarea name=\"summary\" rows=\"2\"></textarea></label>",
-    "    <label>description / review body (HTML, hyperlinks welcome): <textarea name=\"content\" rows=\"5\"></textarea></label>",
+    "    <label>description / review body (Markdown — **bold**, *italic*, [links](url), lists, # headings): <textarea name=\"content\" rows=\"5\"></textarea></label>",
     "    <p class=\"hint\">the file is always copied to the <strong>encrypted archive</strong>. tick <em>publish file now</em> only if you want the blob itself downloadable: that also copies it to the public remote, mints a shareable download link, and federates it. left unticked the file stays archived — the review is published, the download is not.</p>",
     "    <label><input type=\"checkbox\" name=\"publish_file\" value=\"1\"> publish file now (default: archive only, no public download)</label>",
     "  </fieldset>",

@@ -10,6 +10,7 @@
 module annex/publish
 
 import core/types
+import core/markdown
 import ap/addressing
 import ap/object
 import annex/item
@@ -39,7 +40,7 @@ import annex/item
 // table, so the caller threads them in (the annex-item value struct stays
 // untouched — no extra positional field / koka#654 site). Default [] keeps
 // existing call sites compiling unchanged.
-pub fun item-to-ap-object( i : annex-item, followers-url : url, tags : list<string> = [] ) : ap-object
+pub fun item-to-ap-object( i : annex-item, followers-url : url, tags : list<string> = [] ) : div ap-object
   val (to, cc) = build-addressing(ItPublic, followers-url, [])
   // The title and the "review of <url>" reference are folded into the Note's
   // content. We deliberately DO NOT set `inReplyTo`: an annexwyrm review is a
@@ -48,16 +49,23 @@ pub fun item-to-ap-object( i : annex-item, followers-url : url, tags : list<stri
   // a cubecobra page) made Mastodon flag the status reply=true with an
   // unresolvable parent, which hides it from the profile's "Posts" tab
   // (verified via social.doma.dev's API). The reference lives in the body.
-  val title-html = if i.name == "" then "" else "<p><strong>" ++ i.name ++ "</strong></p>\n"
+  //
+  // The body is Markdown, rendered to (safe, escaped) HTML — the federated
+  // `content` must be HTML, which is what remote servers render.
+  val title-html = if i.name == "" then "" else "<p><strong>" ++ md-escape(i.name) ++ "</strong></p>\n"
+  // Scheme-guard the review-of href (safe-url) — a javascript:/data: value
+  // must not become a live anchor in the federated content either.
   val reviewof-html = if i.in-reply-to == "" then ""
-    else "<p>review of <a href=\"" ++ i.in-reply-to ++ "\">" ++ i.in-reply-to ++ "</a></p>\n"
+    elif safe-url(i.in-reply-to) then
+      "<p>review of <a href=\"" ++ md-escape(i.in-reply-to) ++ "\">" ++ md-escape(i.in-reply-to) ++ "</a></p>\n"
+    else "<p>review of " ++ md-escape(i.in-reply-to) ++ "</p>\n"
   Ap-object(
     id            = i.id,
     kind          = OkNote,
     attributed-to = i.owner,
     name          = i.name,
     summary       = i.summary,
-    content       = title-html ++ reviewof-html ++ i.content,
+    content       = title-html ++ reviewof-html ++ md-to-html(i.content),
     media-type    = "",
     urls          = [],
     in-reply-to   = "",

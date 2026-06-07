@@ -1083,6 +1083,67 @@ assert_grep "$(fetch_html_anon "$SOCK" "/tags/rpg2024")" "Tag charset probe" \
 XAP=$(fetch_ap_anon "$SOCK" "$XPATH")
 assert_grep "$XAP" '/tags/rpg2024' "federated Hashtag href is a clean single segment"
 
+# ===========================================================================
+#  Step O — MARKDOWN rendering + the content-warning SPOILER actually hiding
+#  the body. The review body is Markdown (safe: HTML-escaped, fixed tag
+#  allow-list, scheme-restricted links). With a CW set, the body must be
+#  wrapped in <details> so it is hidden until clicked.
+# ===========================================================================
+note "=== Step O — markdown rendering + spoiler ==="
+MD=$(cat <<'MDEOF'
+## Sub heading
+
+This is **bold** and *italic* and a [link](https://example.com) and `inline code`.
+
+- first
+- second
+
+A <script>alert(1)</script> tag and a [bad](javascript:alert(1)) link.
+
+Triple ***emph*** and a [rel](//evil.example/phish) protocol-relative link.
+MDEOF
+)
+MD_PATH=$(upload "$SOCK" "$JAR" "$PDF_ONE" "Markdown test" "spoilers ahead" "$MD" "99" "")
+MD_HTML=$(fetch_html_anon "$SOCK" "$MD_PATH")
+assert_grep "$MD_HTML" "<h2>Sub heading</h2>"            "markdown heading → <h2>"
+assert_grep "$MD_HTML" "<strong>bold</strong>"           "markdown **bold**"
+assert_grep "$MD_HTML" "<em>italic</em>"                  "markdown *italic*"
+assert_grep "$MD_HTML" '<a href="https://example.com" rel="nofollow">link</a>' "markdown [link](url)"
+assert_grep "$MD_HTML" "<code>inline code</code>"         "markdown \`code\`"
+assert_grep "$MD_HTML" "<li>first</li>"                   "markdown - list item"
+# XSS: raw HTML in the body must be escaped, never emitted.
+if printf '%s' "$MD_HTML" | grep -qF '<script>alert(1)</script>'; then
+    red "raw <script> survived markdown rendering"; exit 1; fi
+assert_grep "$MD_HTML" "&lt;script&gt;" "raw HTML in the body is escaped"
+# A non-safe link scheme must NOT become an <a href>.
+if printf '%s' "$MD_HTML" | grep -qF 'href="javascript:'; then
+    red "javascript: link was rendered as an anchor"; exit 1; fi
+green "  ✓ markdown is XSS-safe (no raw HTML, no javascript: anchors)"
+# Triple emphasis ***x*** → bold-italic.
+assert_grep "$MD_HTML" "<strong><em>emph</em></strong>" "triple emphasis → <strong><em>"
+# Protocol-relative //host must NOT become a link (off-site navigation).
+if printf '%s' "$MD_HTML" | grep -qF 'href="//evil.example'; then
+    red "protocol-relative // URL rendered as a live link"; exit 1; fi
+green "  ✓ protocol-relative // link is not rendered as an anchor"
+# A javascript: in_reply_to must render as escaped text, not a clickable href
+# (HTML-escaping alone leaves a live javascript: anchor).
+JS_PATH=$(upload "$SOCK" "$JAR" "$PDF_TWO" "js reviewof probe" "" "<p>x</p>" "99" "javascript:alert(2)")
+JS_HTML=$(fetch_html_anon "$SOCK" "$JS_PATH")
+if printf '%s' "$JS_HTML" | grep -qF 'href="javascript:'; then
+    red "javascript: in_reply_to rendered as a clickable anchor (XSS)"; exit 1; fi
+green "  ✓ javascript: review-of URL renders as text, not an anchor"
+# SPOILER: with a CW set, the body is wrapped in <details> (hidden) — and the
+# content section lives INSIDE the details, not outside it.
+assert_grep "$MD_HTML" '<details class="cw"><summary>spoilers ahead</summary>' \
+    "content warning wraps the body in a spoiler"
+AFTER_DETAILS="${MD_HTML#*<details class=\"cw\">}"
+BEFORE_DETAILS="${MD_HTML%%<details class=\"cw\">*}"
+printf '%s' "$AFTER_DETAILS" | grep -q '<section class="content">' \
+    && green "  ✓ the body is INSIDE the spoiler (hidden until clicked)" \
+    || { red "body content is not inside the spoiler details"; exit 1; }
+if printf '%s' "$BEFORE_DETAILS" | grep -q '<section class="content">'; then
+    red "body content also renders OUTSIDE the spoiler (not hidden)"; exit 1; fi
+
 green ""
 green "=========================================="
 green "  e2e (socket) passed.  data dir: $DATA"

@@ -89,11 +89,11 @@ pub fun emit-update( item : annex-item )
 // a value struct from a pure function avoids the mlift-capture trigger.
 // `tags` (loaded above, from the item_tag side table) federate as the AP
 // object's `tag` Hashtag array.
-fun build-create-activity( aid : url, item : annex-item, tags : list<string> ) : config ap-activity
+fun build-create-activity( aid : url, item : annex-item, tags : list<string> ) : <config,div> ap-activity
   val followers = local-actor-url() ++ "/followers"
   create-of(aid, item.owner, item-to-ap-object(item, followers, tags))
 
-fun build-update-activity( aid : url, item : annex-item, tags : list<string> ) : config ap-activity
+fun build-update-activity( aid : url, item : annex-item, tags : list<string> ) : <config,div> ap-activity
   val followers = local-actor-url() ++ "/followers"
   update-of(aid, item.owner, item-to-ap-object(item, followers, tags))
 
