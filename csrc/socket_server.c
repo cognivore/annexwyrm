@@ -51,11 +51,16 @@ static void set_recv_timeout(int fd) {
 }
 
 /* 64 MiB request cap. The proxy in front (Caddy/nginx) enforces its own
- * limit; this is the daemon's in-memory backstop. Voice notes and most
- * PDFs/EPUBs fit; full podcast episodes may not — raising this further
- * means revisiting the buffer-the-whole-body design (the box has 15 GiB,
- * but the body is copied a handful of times on its way through). */
-#define MAX_REQ_BYTES (64 * 1024 * 1024)
+ * limit; this is the daemon's in-memory backstop. Raised to 2 GiB so full
+ * podcast episodes / long media (600 MB–1 GB) upload — the blob is destined
+ * for rclone (Google Drive) and never persists on local disk anyway. NOTE:
+ * the body is still buffered whole and copied a handful of times on its way
+ * through, so a 1 GB upload peaks at ~3-4 GB; the box has 15 GiB / ~10 GiB
+ * free and the daemon serves requests single-threaded (uploads serialise),
+ * so one large upload at a time is safe. Going meaningfully higher (or
+ * allowing concurrency) needs the streaming redesign, not just a bigger
+ * cap. The nginx `client_max_body_size` is kept in sync with this value. */
+#define MAX_REQ_BYTES ((size_t)2 * 1024 * 1024 * 1024)
 
 kk_integer_t kk_aw_listen(kk_string_t path, kk_context_t* ctx) {
   /* Ignore SIGPIPE so a peer closing mid-write (`nc -z` probe,

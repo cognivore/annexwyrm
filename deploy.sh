@@ -16,6 +16,10 @@ set -euo pipefail
 #   - nginx site /etc/nginx/sites-available/wyrm-fere (:80 acme+redirect, :443 -> unix socket,
 #       PLUS `location /static/ { alias /opt/annexwyrm/static/; }` — the app has no
 #       /static route, so without it every page renders unstyled)
+#       PLUS `client_max_body_size 2048m;` + `client_body_timeout 1800s;` and, in
+#       snippets/annexwyrm-proxy.conf, `proxy_read_timeout 1800s; proxy_send_timeout
+#       1800s;` — large media uploads (kept in sync with the daemon's 2 GiB
+#       MAX_REQ_BYTES); the synchronous rclone put to Drive can take minutes)
 #   - certbot certonly --webroot -w /var/www/html -d wyrm.fere.me
 #   - Porkbun A record wyrm.fere.me -> 46.62.199.15
 #
