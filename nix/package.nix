@@ -23,11 +23,19 @@ stdenv.mkDerivation {
     export HOME=$TMPDIR
     mkdir -p build
 
-    # ccincdir MUST be absolute. koka resolves the `extern import c file
-    # "../../csrc/X.c"` paths against it; a relative `csrc` makes koka look at
-    # `src/../csrc` and fail ("unable to read external file") inside the build
-    # sandbox. The dev recipe (`just build`) already uses `$(pwd)/csrc`; this
-    # keeps the sandboxed build in step. CWD here is the unpacked source root.
+    # Work around koka's buggy `resolveDot` (Common/File.hs): it does NOT
+    # collapse *consecutive* `..`, so `extern import c file "../../csrc/X.c"`
+    # from src/interp/ resolves to a residual `<root>/src/../csrc/X.c` that
+    # koka's own readFile then rejects ("unable to read external file"). It only
+    # surfaces on a from-source build (darwin substitutes annexwyrm from cachix;
+    # the koka.org binary used by deploy.sh tolerates the residual `..`). A
+    # SINGLE `..` collapses fine, so put the C bridges at src/csrc and rewrite
+    # the imports one level shallower. (Fix koka's resolveDot to retire this.)
+    cp -r csrc src/csrc
+    sed -i 's|"\.\./\.\./csrc/|"../csrc/|g' src/interp/*.kk
+
+    # ccincdir (C header search path, absolute) still points at the original
+    # csrc — aw_bridge.h lives there.
     koka -O2 \
       --target=c \
       --include=src \
