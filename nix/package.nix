@@ -23,10 +23,15 @@ stdenv.mkDerivation {
     export HOME=$TMPDIR
     mkdir -p build
 
+    # ccincdir MUST be absolute. koka resolves the `extern import c file
+    # "../../csrc/X.c"` paths against it; a relative `csrc` makes koka look at
+    # `src/../csrc` and fail ("unable to read external file") inside the build
+    # sandbox. The dev recipe (`just build`) already uses `$(pwd)/csrc`; this
+    # keeps the sandboxed build in step. CWD here is the unpacked source root.
     koka -O2 \
       --target=c \
       --include=src \
-      --ccincdir=csrc \
+      --ccincdir="$(pwd)/csrc" \
       --builddir=build/.koka \
       --cclib="sqlite3;ssl;crypto;curl;argon2" \
       -o build/annexwyrm \
