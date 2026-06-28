@@ -13,6 +13,7 @@
  */
 #include "aw_bridge.h"
 
+#include <stdio.h>      /* snprintf */
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <fcntl.h>
