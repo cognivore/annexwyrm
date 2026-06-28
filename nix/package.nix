@@ -23,19 +23,16 @@ stdenv.mkDerivation {
     export HOME=$TMPDIR
     mkdir -p build
 
-    # Work around koka's buggy `resolveDot` (Common/File.hs): it does NOT
-    # collapse *consecutive* `..`, so `extern import c file "../../csrc/X.c"`
-    # from src/interp/ resolves to a residual `<root>/src/../csrc/X.c` that
-    # koka's own readFile then rejects ("unable to read external file"). It only
-    # surfaces on a from-source build (darwin substitutes annexwyrm from cachix;
-    # the koka.org binary used by deploy.sh tolerates the residual `..`). A
-    # SINGLE `..` collapses fine, so put the C bridges at src/csrc and rewrite
-    # the imports one level shallower. (Fix koka's resolveDot to retire this.)
-    cp -r csrc src/csrc
-    sed -i 's|"\.\./\.\./csrc/|"../csrc/|g' src/interp/*.kk
+    # A UTF-8 locale is REQUIRED. koka reads each `extern import c file
+    # "../../csrc/X.c"` via Haskell readFile, which decodes with the locale
+    # encoding; our C bridges contain UTF-8 (em-dashes in comments), so under a
+    # nix build's default C/POSIX locale readFile throws and koka reports
+    # "unable to read external file" for every bridge. (darwin only ever
+    # substitutes annexwyrm from cachix; deploy.sh works because Ubuntu has a
+    # UTF-8 locale.) C.UTF-8 is built into glibc, so no locale archive needed.
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
 
-    # ccincdir (C header search path, absolute) still points at the original
-    # csrc — aw_bridge.h lives there.
     koka -O2 \
       --target=c \
       --include=src \
