@@ -171,6 +171,18 @@ remote (encrypted; e.g. `archive-crypt:annexwyrm`) and public remote
 CDN/S3 bucket. Until storage is set, **file uploads are refused** (file-less
 text reviews still work).
 
+**Storage self-test.** Saving storage doesn't just store the config — it runs
+a real rclone **round-trip** (write a tiny probe → read it back byte-exact →
+delete it) through the tenant's own config and reports the verdict inline:
+*"archive remote: reachable — uploads will work ✓"* or *"FAILED — <rclone's
+error>"*. So a tenant learns their secrets are both **set and functional**
+before they trust an upload, instead of discovering a typo'd token on the first
+real upload. A *re-test saved storage* button (`POST /settings/storage/test`)
+re-runs it any time (credentials can be revoked later). The probe object is
+always cleaned up. Implementation: `storage-self-test` store op
+(`interp/store_rclone.kk`), surfaced via `annex/storage`'s `self-test-archive`
+/ `self-test-pubrem`.
+
 **Admin storage** comes from the environment (`ANNEXWYRM_ARCHIVE_REMOTE`,
 `ANNEXWYRM_PUBLIC_REMOTE`, `ANNEXWYRM_PUBLIC_URL_BASE`) and is re-applied on
 restart. To change it, change the env and restart — editing it in `/settings`

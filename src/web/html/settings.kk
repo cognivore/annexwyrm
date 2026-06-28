@@ -10,11 +10,16 @@ import web/html/layout
 
 // `current` is the stored width ("860px"/"1080px"/"1440px"/"none"). `saved`
 // is "" / "width" / "storage" (which section was just saved). `conf`,
-// `archive`, `public`, `url-base` pre-fill the tenant's storage section.
+// `archive`, `pubrem`, `url-base` pre-fill the tenant's storage section.
+// `arch-status`/`pub-status` carry the self-test verdict for the storage
+// banner: "" = not tested (a plain GET), "ok" = reachable, anything else is a
+// failure reason. They are LAST (after max-width) so the GET caller, which
+// omits them, gets the no-banner default.
 pub fun render-settings-form(
     current : string, saved : string,
     conf : string, archive : string, pubrem : string, url-base : string,
-    is-admin : bool, max-width : string = "1080px"
+    is-admin : bool, max-width : string = "1080px",
+    arch-status : string = "", pub-status : string = ""
   ) : string
   val body = ([
     "<h1>settings</h1>",
@@ -32,10 +37,31 @@ pub fun render-settings-form(
     "  </fieldset>",
     "  <button type=\"submit\">save width</button>",
     "</form>",
+    storage-status-banner(arch-status, pub-status),
     storage-form(conf, archive, pubrem, url-base)
   ]).join("\n")
   layout("settings — annexwyrm", "", "<a href=\"/\">archive</a> · settings",
     body, max-width)
+
+// The self-test verdict, shown after a save / re-test. Empty when not tested.
+// The failure reason is rclone's own stderr, so esc() it.
+fun storage-status-banner( arch : string, pubr : string ) : string
+  if arch == "" && pubr == "" then ""
+  else ([
+    "<div class=\"storage-test\">",
+    "  <strong>storage self-test</strong>",
+    "  <ul>",
+    "    " ++ status-line("archive remote (uploads)", arch, "uploads will work"),
+    "    " ++ status-line("public remote (publishing)", pubr, "publishing will work"),
+    "  </ul>",
+    "</div>"
+  ]).join("\n")
+
+fun status-line( label : string, status : string, ok-msg : string ) : string
+  if status == "ok" then
+    "<li class=\"ok\">" ++ esc(label) ++ ": reachable — " ++ esc(ok-msg) ++ " ✓</li>"
+  else
+    "<li class=\"fail\">" ++ esc(label) ++ ": FAILED — " ++ esc(status) ++ "</li>"
 
 fun saved-hint( saved : string ) : string
   if saved == "width" then "<p class=\"hint saved\">width saved.</p>"
@@ -75,7 +101,8 @@ fun storage-form( conf : string, archive : string, pubrem : string, url-base : s
       "\" placeholder=\"https://cdn.example.com/files\" autocomplete=\"off\">",
     "    </label>",
     "  </fieldset>",
-    "  <button type=\"submit\">save storage</button>",
+    "  <button type=\"submit\">save &amp; test storage</button>",
+    "  <button type=\"submit\" formaction=\"/settings/storage/test\">re-test saved storage</button>",
     "</form>"
   ]).join("\n")
 

@@ -10,13 +10,15 @@
 
 module web/handler/settings
 
+import core/types    // url
 import core/url
 import effects/db
 import effects/time
 import effects/config
+import effects/store  // storage self-test
 import annex/storage
 import web/prefs
-import web/session   // is-tenant-session, session-actor, current-session
+import web/session   // is-tenant-session, session-actor, current-session, is-admin-session
 import web/server
 import web/html/settings
 
@@ -45,8 +47,11 @@ pub fun handle-settings-post( req : request ) : <db,config,div|e> response
       set-page-width(w)
       see-other("/settings?saved=width")
 
-// POST /settings/storage — save the session tenant's own rclone backend.
-pub fun handle-settings-storage-post( req : request ) : <db,time,config,div|e> response
+// POST /settings/storage — save the session tenant's own rclone backend, then
+// SELF-TEST it (a real rclone round-trip through their config) and render the
+// result, so a tenant learns immediately whether their secrets are set AND
+// actually work for storing media — instead of finding out on first upload.
+pub fun handle-settings-storage-post( req : request ) : <db,time,config,store,div|e> response
   val owner = session-actor(req)
   if owner == "" then forbidden("login required")
   else
@@ -77,7 +82,33 @@ pub fun handle-settings-storage-post( req : request ) : <db,time,config,div|e> r
       bad-request("rclone config is too large (64 KiB max)")
     else
       save-tenant-store(owner, conf, archive, pubrem, urlbase)
-      see-other("/settings?saved=storage")
+      render-storage-result(req, owner)
+
+// POST /settings/storage/test — re-run the self-test against the tenant's
+// already-SAVED config (e.g. to confirm credentials still work later). Does
+// not save anything.
+pub fun handle-settings-storage-test( req : request ) : <db,config,store,div|e> response
+  val owner = session-actor(req)
+  if owner == "" then forbidden("login required")
+  else render-storage-result(req, owner)
+
+// Load the tenant's saved storage, run the archive + public self-tests, and
+// render the settings page with the verdict banner. Shared by save + re-test.
+fun render-storage-result( req : request, owner : url ) : <db,config,store,div|e> response
+  val w = get-page-width()
+  val sf = load-storage-fields(owner)
+  val admin = is-admin-session(req)
+  val (arch, pubr) = match load-tenant-store(owner)
+    Nothing  -> ("not configured", "not configured")
+    Just(ts) -> (status-of(ts.self-test-archive), status-of(ts.self-test-pubrem))
+  ok-html(render-settings-form(w, "storage", sf.rclone-conf, sf.archive,
+                               sf.pubrem, sf.url-base, admin, w, arch, pubr))
+    .with-header("Cache-Control", "no-store")
+
+// Map a self-test result to a display status: "" (success) → "ok"; any
+// non-empty reason is passed through verbatim for the banner to show.
+fun status-of( r : string ) : string
+  if r == "" then "ok" else r
 
 fun saved-param( q : string ) : div string
   query-parse(q).filter(fn(p) p.fst == "saved").head.map(fn(p) p.snd).default("")

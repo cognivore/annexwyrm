@@ -72,3 +72,11 @@ pub effect store
   // safe under concurrent calls (atomic replace); the returned path is then
   // carried in each blob-loc's `conf` field for that tenant's operations.
   fun materialize-conf( owner : string, conf : string ) : string
+
+  // Verify the backend at `loc` actually works for storing media: a real
+  // round-trip (write a tiny probe object, read it back byte-for-byte, delete
+  // it) through this tenant's config. Returns "" on success, or a short
+  // human-readable reason (rclone's stderr) on failure — so a tenant learns
+  // their secrets are set AND functional before they trust an upload to them.
+  // `loc.key` should be a dedicated probe key (e.g. ".annexwyrm-selftest").
+  fun storage-self-test( loc : blob-loc ) : string

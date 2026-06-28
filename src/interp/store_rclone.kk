@@ -78,7 +78,31 @@ pub fun with-rclone-store( action : () -> <store,shell,config,ndet,fsys|e> a )
         // that into a 5xx), never silently using the wrong/ambient backend.
         val _ = kk-write-private-file(path, conf)
         path
+    fun storage-self-test(loc : blob-loc)
+      // Real round-trip through THIS tenant's config: write a tiny probe, read
+      // it back byte-exact, then delete it. "" = the secrets are set and the
+      // backend genuinely accepts media; otherwise the first failing step's
+      // rclone stderr (trimmed) — the same diagnostic the tenant would have
+      // hit on their first real upload, surfaced up front instead.
+      val probe = "annexwyrm-storage-self-test"
+      val w = run(rclone(loc.conf, ["rcat", loc.show]), probe)
+      if !w.ok then short-err("write failed", w.stderr)
+      else
+        val r = run(rclone(loc.conf, ["cat", loc.show]), "")
+        // Always clean up the probe, regardless of the read outcome.
+        val _ = run(rclone(loc.conf, ["deletefile", "--drive-use-trash=false", loc.show]), "")
+        if !r.ok then short-err("read-back failed", r.stderr)
+        elif r.stdout != probe then "read-back mismatch: the bytes did not round-trip intact"
+        else ""
   action()
+
+// Compress an rclone stderr blob to one short line for display: last
+// non-empty line, capped, control bytes stripped. Falls back to `label`.
+fun short-err( label : string, stderr : string ) : string
+  val last = stderr.split("\n").map(fn(s) s.trim).filter(fn(s) s != "").reverse.head.default("")
+  val clean = last.list.filter(fn(c) c >= ' ' && c != '\x7f').string
+  val capped = if clean.count > 200 then clean.list.take(200).string ++ "…" else clean
+  if capped == "" then label else label ++ ": " ++ capped
 
 // A filesystem-safe per-tenant config filename derived from the actor id
 // (a URL like "https://dom/users/alice"). Keep word chars, dot, dash; map

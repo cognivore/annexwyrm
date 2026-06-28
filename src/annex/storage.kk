@@ -66,6 +66,19 @@ pub fun tenant-store/archive-loc( ts : tenant-store, key : string ) : blob-loc
 pub fun tenant-store/pubrem-loc( ts : tenant-store, key : string ) : blob-loc
   Blob-loc(ts.pubrem, key, ts.conf-path, ts.url-base)
 
+// A dedicated probe key the self-test writes/reads/deletes — a dotfile so it
+// never collides with a real item slug (those are 12-byte hex).
+val self-test-key : string = ".annexwyrm-selftest"
+
+// Self-test this tenant's ARCHIVE backend (the one every upload must reach):
+// "" = set and working, else a short failure reason.
+pub fun tenant-store/self-test-archive( ts : tenant-store ) : <store|e> string
+  storage-self-test(ts.archive-loc(self-test-key))
+
+// Self-test this tenant's PUBLIC backend (used when publishing a file).
+pub fun tenant-store/self-test-pubrem( ts : tenant-store ) : <store|e> string
+  storage-self-test(ts.pubrem-loc(self-test-key))
+
 // Read a tenant's raw storage fields for the settings form. Returns empty
 // fields (not Nothing) when unset, so the form renders blank for a new tenant.
 pub fun load-storage-fields( owner : url ) : db storage-fields

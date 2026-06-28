@@ -106,6 +106,7 @@ pub fun dispatch( req : request )
     ("GET",    Cons("settings", Nil)) -> handle-settings-form(req)
     ("POST",   Cons("settings", Nil)) -> handle-settings-post(req)
     ("POST",   Cons("settings", Cons("storage", Nil))) -> handle-settings-storage-post(req)
+    ("POST",   Cons("settings", Cons("storage", Cons("test", Nil)))) -> handle-settings-storage-test(req)
     ("POST",   Cons("logout", Nil)) -> handle-logout(req)
 
     // Invite-only registration + admin invite management -----------------

@@ -1468,14 +1468,18 @@ BOB_INV=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" --cookie 
 [ "$BOB_INV" = "403" ] || { red "non-admin bob GET /invites expected 403, got $BOB_INV"; exit 1; }
 green "  ✓ bob (non-admin) cannot reach /invites"
 
-# (f) Storage POST forbids local backends, accepts named cloud remotes.
+# (f) Storage POST forbids local backends, accepts named-remote targets. A
+#     valid save now returns 200 (it renders the self-test verdict inline, not
+#     a redirect); the rejected cases are 400 (validation, before any save). We
+#     use an undefined remote name for the accept case so the ensuing self-test
+#     fails FAST locally ("section not found") with no network call.
 stor() { curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" --cookie "$BOB_JAR" \
            --data-urlencode "rclone_conf=$1" --data-urlencode "archive_remote=$2" \
            --data-urlencode "public_remote=$3" --data-urlencode "public_url_base=$4" "http://x/settings/storage"; }
 [ "$(stor '' "$TMP/x" "cloud:b" '')"            = "400" ] || { red "local-path archive must be rejected"; exit 1; }
 [ "$(stor 'type = local' "a:x" "b:y" '')"       = "400" ] || { red "type=local config must be rejected"; exit 1; }
-[ "$(stor '[a] type = s3' "a:arch" "a:pub" '')" = "303" ] || { red "named cloud remotes must be accepted"; exit 1; }
-green "  ✓ storage POST rejects local backends, accepts named cloud remotes"
+[ "$(stor '' "phantom:a" "phantom:b" '')"       = "200" ] || { red "named-remote targets must be accepted"; exit 1; }
+green "  ✓ storage POST rejects local backends, accepts named-remote targets"
 
 # (g) Seed bob's REAL storage directly with a non-empty rclone.conf defining a
 #     NAMED remote. The settings UI forbids local backends, but the test env IS
@@ -1518,6 +1522,22 @@ green "  ✓ anon download forbidden; a non-owner cannot publish/mutate bob's it
 assert_grep "$(fetch_html_anon "$SOCK" "/search?q=Bob")" 'by <a href="/users/bob">bob</a>' \
   "search attributes bob's item to bob"
 green "  ✓ the shared archive attributes items across tenants"
+
+# (k) Storage SELF-TEST: bob's saved config round-trips (a real rclone
+#     write→read→delete through HIS config), so the page reports uploads will
+#     work — and the probe object is cleaned up, never left behind.
+BOB_TEST=$(curl -s --unix-socket "$SOCK" --cookie "$BOB_JAR" --data "" "http://x/settings/storage/test")
+assert_grep "$BOB_TEST" "uploads will work" "self-test confirms bob's secrets work for uploads"
+[ ! -e "$TMP/bob-archive/.annexwyrm-selftest" ] || { red "self-test left its probe object behind"; exit 1; }
+green "  ✓ self-test round-trips bob's config and cleans up the probe"
+
+# (l) A broken backend (archive points at a remote not in the config) self-tests
+#     as FAILED — the tenant learns up front, not on first upload.
+sqlite3 "$DB" "UPDATE tenant_storage SET archive_remote='ghost:$TMP/nope' WHERE actor_id='http://localhost/users/bob';"
+BOB_BAD=$(curl -s --unix-socket "$SOCK" --cookie "$BOB_JAR" --data "" "http://x/settings/storage/test")
+assert_grep "$BOB_BAD" "archive remote (uploads): FAILED" "a broken archive remote self-tests as FAILED"
+sqlite3 "$DB" "UPDATE tenant_storage SET archive_remote='bobarch:$TMP/bob-archive' WHERE actor_id='http://localhost/users/bob';"
+green "  ✓ self-test surfaces a broken backend as FAILED before any upload"
 
 green ""
 green "=========================================="
