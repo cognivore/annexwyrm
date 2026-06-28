@@ -98,8 +98,9 @@ pub fun load-storage-fields( owner : url ) : db storage-fields
     Cons(r, _) ->
       Storage-fields(text(r.col(0)), text(r.col(1)), text(r.col(2)), text(r.col(3)))
 
-// Upsert a tenant's storage config (the settings POST + the init/serve admin
-// seed both land here). `pubrem` is the public-download remote target.
+// Upsert a tenant's storage config (the settings POST lands here). `pubrem` is
+// the public-download remote target. A changed config materialises to a new
+// content-addressed file on the next blob op, so no cache to invalidate here.
 pub fun save-tenant-store(
     owner : url, conf : string, archive : string, pubrem : string, urlbase : string
   ) : <db,time|e> ()
@@ -111,17 +112,6 @@ pub fun save-tenant-store(
     [txt(owner), txt(conf), txt(archive), txt(pubrem), txt(urlbase), txt(now)]
   )
   ()
-
-// Seed a tenant's storage ONLY when it has none yet. Used at serve startup to
-// give the bootstrap/admin actor a storage row from the environment without
-// clobbering one an admin later edited via settings.
-pub fun seed-tenant-store-if-absent(
-    owner : url, conf : string, archive : string, pubrem : string, urlbase : string
-  ) : <db,time|e> ()
-  val rows = query("SELECT 1 FROM tenant_storage WHERE actor_id = ?", [txt(owner)])
-  match rows
-    Cons(_,_) -> ()
-    Nil       -> save-tenant-store(owner, conf, archive, pubrem, urlbase)
 
 fun text( v : sql-value ) : string
   match v { SqlText(s) -> s; _ -> "" }

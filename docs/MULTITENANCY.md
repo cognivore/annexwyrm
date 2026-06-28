@@ -76,7 +76,12 @@ The chain, for any blob op:
 2. `load-tenant-store(owner)` reads `tenant_storage`, and **materialises** the
    owner's `rclone_conf` to a `0600` file under `<data-dir>/storage/` via the
    `materialize-conf` store op (C bridge `aw_write_private_file`, atomic
-   mkstemp+rename). Secrets reach the filesystem only — never argv or env.
+   mkstemp+rename). Secrets reach the filesystem only — never argv or env. The
+   file is **content-addressed** (`<safe-owner>-<hash>.conf`) and written
+   **once** (write-if-absent): thereafter rclone owns it, so when rclone
+   refreshes an OAuth token it rewrites the file in place and that refresh
+   **persists** (no per-op re-refresh, no lost refresh-token rotation). A
+   changed config hashes to a new path → a fresh file, so edits still apply.
 3. `ts.archive-loc(key)` / `ts.pubrem-loc(key)` build a `blob-loc` carrying the
    remote target, the key, the **conf path**, and the **url-base**.
 4. `store_rclone` runs `rclone --config <conf> <op> <remote>/<key>` (no

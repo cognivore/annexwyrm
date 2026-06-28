@@ -1515,8 +1515,10 @@ assert_sql "$DB" "SELECT username FROM actor a JOIN item i ON i.owner_id=a.id WH
   "bob's upload is owned by bob"
 [ -f "$TMP/bob-archive/$BOB_SLUG" ] || { red "bob's blob should land in HIS archive remote (via --config)"; exit 1; }
 # bob's config was materialised to a private 0600 file (secrets off argv/env).
-BOB_CONF_FILE="$DATA/storage/http___localhost_users_bob.conf"
-[ -f "$BOB_CONF_FILE" ] || { red "bob's rclone config was not materialised to a file"; exit 1; }
+# The name is content-addressed (…-<hash>.conf), written once then owned by
+# rclone so its token refreshes persist — so glob for it.
+BOB_CONF_FILE=$(ls "$DATA"/storage/http___localhost_users_bob-*.conf 2>/dev/null | head -1)
+[ -n "$BOB_CONF_FILE" ] || { red "bob's rclone config was not materialised to a file"; exit 1; }
 BOB_PERM=$(stat -f '%Lp' "$BOB_CONF_FILE" 2>/dev/null || stat -c '%a' "$BOB_CONF_FILE")
 [ "$BOB_PERM" = "600" ] || { red "materialised config perms = $BOB_PERM, want 600"; exit 1; }
 green "  ✓ bob uploaded via HIS rclone config (materialised 0600, passed as --config)"

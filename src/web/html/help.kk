@@ -65,7 +65,7 @@ pub fun render-storage-help( max-width : string = "1080px" ) : string
     "<h2>good to know</h2>",
     "<ul>",
     "  <li>Only <strong>cloud</strong> backends are accepted (drive, s3, b2, sftp, …) — never a local path. Your files must live on your own cloud, not on this server.</li>",
-    "  <li>A token can expire; if uploads start failing, hit <strong>re-test saved storage</strong> in settings, or re-paste a fresh config.</li>",
+    "  <li>rclone keeps your access token fresh automatically (it stores a long-lived <em>refresh</em> token), and the server preserves those refreshes — so you set this up <strong>once and forget it</strong>. You only need to re-paste if you revoke this app's access to your cloud, or switch clouds.</li>",
     "  <li>This server only <em>relays</em> a download when someone views a file — it never keeps a copy.</li>",
     "</ul>",
     "<p><a href=\"/settings\">← back to settings</a></p>"

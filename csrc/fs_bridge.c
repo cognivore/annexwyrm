@@ -47,6 +47,25 @@ static int aw_write_all(int fd, const char* buf, size_t len) {
   return 0;
 }
 
+/* 1 if `path` exists, else 0. Used for write-if-absent: a materialised config
+ * is named by a hash of its content, so once written we must NOT overwrite it
+ * — rclone updates that file in place when it refreshes an OAuth token, and
+ * re-materialising from the (original) DB copy would discard the refresh. */
+kk_integer_t kk_aw_file_exists(kk_string_t path_s, kk_context_t* ctx) {
+  kk_ssize_t plen = 0;
+  const char* path = aw_cstr(path_s, &plen, ctx);
+  int exists = 0;
+  char* p = (char*)malloc((size_t)plen + 1);
+  if (p) {
+    memcpy(p, path, (size_t)plen);
+    p[plen] = 0;
+    exists = (access(p, F_OK) == 0) ? 1 : 0;
+    free(p);
+  }
+  kk_string_drop(path_s, ctx);
+  return kk_integer_from_int(exists, ctx);
+}
+
 kk_integer_t kk_aw_write_private_file(kk_string_t path_s, kk_string_t bytes_s,
                                       kk_context_t* ctx) {
   kk_ssize_t plen = 0, blen = 0;
