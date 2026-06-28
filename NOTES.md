@@ -289,11 +289,16 @@ annexwyrm is now multi-tenant + invite-only. The full design is in
   path (0600 file under `<data-dir>/storage/`, written by `csrc/fs_bridge.c`)
   and url-base. Every blob op resolves the OWNER's store (`annex/storage.kk`),
   so a tenant's bytes ride its own cloud and a cross-tenant read decrypts
-  through the owner's config. The admin's row is env-seeded on `init`+`serve`
-  (`bootstrap-admin`), rclone_conf `''` = ambient — so prod/e2e are unchanged.
+  through the owner's config. **There is NO ambient fallback and no admin
+  exception:** a blank rclone_conf is "unconfigured" for everyone (owner
+  included) → uploads refused. `bootstrap-admin` only sets `is_admin`; storage
+  is configured in `/settings` like any tenant (setup guide at `/help/storage`,
+  a self-test round-trip runs on save). The e2e seeds each owner's storage via
+  SQL since the form rightly rejects local backends.
 - **Auth.** `web/session.kk` replaces `is-owner-session` with `session-actor`
   / `is-tenant-session` / `is-owner-of(item.owner)` / `is-admin-session`. File
-  download is any-tenant; item mutation is owner-only; invites are admin-only.
+  download is any-tenant; item mutation is owner-only; invites are admin-only
+  (the ONLY admin privilege).
 - **Federation is per-actor.** The outbox threads the acting actor
   (`item.owner` for Create/Update/Delete; the session actor for
   Follow/Like/Announce); `delivery.sender_id` already drove which key signs.
