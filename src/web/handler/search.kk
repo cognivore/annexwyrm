@@ -64,8 +64,10 @@ fun search-items( q : string, page : int, size : int ) : db list<home-row>
   val offset = (page - 1) * size
   query(
     "SELECT DISTINCT i.id, i.name, i.object_type, COALESCE(i.rating,99), " ++
-    "COALESCE(i.in_reply_to,''), i.published_at, COALESCE(i.file_published,0) " ++
+    "COALESCE(i.in_reply_to,''), i.published_at, COALESCE(i.file_published,0), " ++
+    "COALESCE(a.username,'') " ++
     "FROM item i LEFT JOIN item_tag t ON t.item_id = i.id " ++
+    "LEFT JOIN actor a ON a.id = i.owner_id " ++
     "WHERE i.name LIKE ? OR i.summary LIKE ? OR i.content LIKE ? OR t.tag LIKE ? " ++
     "ORDER BY i.published_at DESC LIMIT ? OFFSET ?",
     [txt(like), txt(like), txt(like), txt(like-lc), num(size), num(offset)]
@@ -86,8 +88,10 @@ fun items-by-tag( tag : string, page : int, size : int ) : db list<home-row>
   val offset = (page - 1) * size
   query(
     "SELECT i.id, i.name, i.object_type, COALESCE(i.rating,99), " ++
-    "COALESCE(i.in_reply_to,''), i.published_at, COALESCE(i.file_published,0) " ++
+    "COALESCE(i.in_reply_to,''), i.published_at, COALESCE(i.file_published,0), " ++
+    "COALESCE(a.username,'') " ++
     "FROM item i JOIN item_tag t ON t.item_id = i.id " ++
+    "LEFT JOIN actor a ON a.id = i.owner_id " ++
     "WHERE t.tag = ? ORDER BY i.published_at DESC LIMIT ? OFFSET ?",
     [txt(tag), num(size), num(offset)]
   ).map(to-home-row)
@@ -114,7 +118,8 @@ fun to-home-row( r : sql-row ) : home-row
     rating         = intval(r.col(3)),
     in-reply-to    = text(r.col(4)),
     published      = text(r.col(5)),
-    file-published = intval(r.col(6)) != 0
+    file-published = intval(r.col(6)) != 0,
+    owner          = text(r.col(7))
   )
 
 // ----------------------------------------------------------------------

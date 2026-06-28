@@ -7,11 +7,13 @@ module web/handler/webfinger
 import core/types
 import core/json
 import core/url
+import effects/db
 import effects/config
 import ap/webfinger
+import ap/persist   // local-actor-id-for
 import web/server
 
-pub fun handle-webfinger( req : request ) : <config,div|e> response
+pub fun handle-webfinger( req : request ) : <db,config,div|e> response
   val resource = query-parse(req.query)
                    .filter(fn(p) p.fst == "resource")
                    .head.map(fn(p) p.snd).default("")
@@ -20,12 +22,10 @@ pub fun handle-webfinger( req : request ) : <config,div|e> response
     match parse-acct(resource)
       Nothing -> bad-request("resource is not an acct: URI")
       Just(q) ->
-        // Accept queries for our domain only.
+        // Accept queries for our domain and any LOCAL tenant on it.
         if q.domain != get-domain() then
           not-found("no such account: " ++ resource)
-        elif q.username != get-local-username() then
-          not-found("no such account: " ++ resource)
         else
-          val actor-id = get-base-url() ++ "/users/" ++ q.username
-          val jrd = build-jrd(resource, actor-id)
-          ok-jrd(json/show(jrd))
+          val actor-id = local-actor-id-for(q.username)
+          if actor-id == "" then not-found("no such account: " ++ resource)
+          else ok-jrd(json/show(build-jrd(resource, actor-id)))

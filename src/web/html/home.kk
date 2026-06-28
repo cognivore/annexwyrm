@@ -12,6 +12,8 @@ pub val items-per-page : int = 50
 
 // One row in the homepage list — built by the handler, rendered here.
 // `rating` carries the unrated sentinel (99) when the item has no rating.
+// `owner` is the posting tenant's username ("" if unknown) — the shared
+// multitenant feed attributes each item to its author.
 pub value struct home-row
   id             : string
   name           : string
@@ -20,6 +22,7 @@ pub value struct home-row
   in-reply-to    : string        // "" for top-level items
   published      : string
   file-published : bool          // True ⇒ the blob has a public download
+  owner          : string        // posting tenant's username; "" = unknown
 
 pub fun render-home( rows : list<home-row>, instance-name : string,
                      page : int, total : int, size : int,
@@ -111,10 +114,14 @@ fun item-row( r : home-row ) : string
   val link = "<a class=\"title\" href=\"" ++ esc(path) ++ "\">" ++ esc-title(r.name) ++ "</a>"
   val rev  = if r.in-reply-to == "" then "" else " <span class=\"meta\">[review]</span>"
   val file = if r.file-published then " <span class=\"meta\">[file]</span>" else ""
+  // Attribute the post to its tenant (the shared archive is multi-author).
+  val by   = if r.owner == "" then ""
+             else " <span class=\"meta by\">by <a href=\"" ++ esc("/users/" ++ r.owner) ++
+                  "\">" ++ esc(r.owner) ++ "</a></span>"
   "<li class=\"item-row\">" ++
     "<span class=\"kind\">[" ++ esc(r.kind.to-lower) ++ "]</span> " ++
     rating-sentence(r.rating, "<em class=\"medium\">" ++ link ++ "</em>") ++
-    rev ++ file ++
+    rev ++ file ++ by ++
     " <span class=\"meta\">" ++ esc(r.published) ++ "</span>" ++
   "</li>"
 

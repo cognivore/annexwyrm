@@ -30,6 +30,8 @@ import web/handler/login
 import web/handler/settings
 import web/handler/follow
 import web/handler/search
+import web/handler/register
+import web/handler/invites
 
 // Split "/users/alice/inbox" → ["users", "alice", "inbox"].
 fun segments( path : string ) : list<string>
@@ -103,7 +105,14 @@ pub fun dispatch( req : request )
     ("POST",   Cons("login", Nil))  -> handle-login-post(req)
     ("GET",    Cons("settings", Nil)) -> handle-settings-form(req)
     ("POST",   Cons("settings", Nil)) -> handle-settings-post(req)
+    ("POST",   Cons("settings", Cons("storage", Nil))) -> handle-settings-storage-post(req)
     ("POST",   Cons("logout", Nil)) -> handle-logout(req)
+
+    // Invite-only registration + admin invite management -----------------
+    ("GET",    Cons("register", Nil)) -> handle-register-form(req)
+    ("POST",   Cons("register", Nil)) -> handle-register-post(req)
+    ("GET",    Cons("invites", Nil))  -> handle-invites-form(req)
+    ("POST",   Cons("invites", Nil))  -> handle-invites-post(req)
 
     // Follow / unfollow ---------------------------------------------------
     ("POST",   Cons("follow", Nil))   -> handle-follow-action(req)

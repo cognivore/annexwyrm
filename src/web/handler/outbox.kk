@@ -8,20 +8,22 @@ import core/url
 import effects/db
 import effects/config
 import ap/collection
+import ap/persist   // local-actor-id-for
 import web/server
 
 pub fun handle-outbox( req : request, u : string )
   : <db,config,div|e> response
-  if u != get-local-username() then not-found("no such user")
+  val actor-url = local-actor-id-for(u)
+  if actor-url == "" then not-found("no such user")
   else
-    val base = get-base-url() ++ "/users/" ++ u ++ "/outbox"
+    val base = actor-url ++ "/outbox"
     val total = query(
       "SELECT COUNT(*) FROM activity WHERE actor_id = ? AND inbox_remote = 0",
-      [txt(get-base-url() ++ "/users/" ++ u)]
+      [txt(actor-url)]
     ).first-int.default(0)
     val page = parse-page(req.query)
     if page <= 0 then ok-jsonld(json/show(collection-doc(base, total)))
-    else ok-jsonld(json/show(page-doc(base, total, page)))
+    else ok-jsonld(json/show(page-doc(base, total, page, actor-url)))
 
 fun parse-page( q : string ) : div int
   query-parse(q).filter(fn(p) p.fst == "page").head
@@ -44,13 +46,13 @@ fun collection-doc( base : url, total : int ) : json
     ordered       = True
   ))
 
-fun page-doc( base : url, total : int, page : int ) : <db,div> json
+fun page-doc( base : url, total : int, page : int, actor-url : url ) : <db,div> json
   val size = default-page-size
   val offset = (page - 1) * size
   val rows = query(
-    "SELECT raw FROM activity WHERE inbox_remote = 0 " ++
+    "SELECT raw FROM activity WHERE actor_id = ? AND inbox_remote = 0 " ++
     "ORDER BY received_at DESC LIMIT ? OFFSET ?",
-    [num(size), num(offset)]
+    [txt(actor-url), num(size), num(offset)]
   )
   val items = rows.flatmap(fn(r) raw-to-json(r.col(0)))
   val (prev, next) = page-numbers(total, page, size)

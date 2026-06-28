@@ -1417,6 +1417,108 @@ green "  ✓ width modes validate against the closed set"
 curl -s -o /dev/null --unix-socket "$SOCK" --cookie "$JAR" --data "width=1080px" "http://x/settings"
 assert_grep "$(fetch_html_anon "$SOCK" "/")" '<style>body{max-width:1080px}</style>' "container width restored to the 1080px default"
 
+# ===========================================================================
+#  Step T — MULTITENANCY. Invite-only registration; a second tenant (bob) with
+#  his OWN storage backend; cross-tenant file viewing (any logged-in tenant
+#  downloads any tenant's archived file, streamed through the OWNER's config);
+#  and the per-item / admin authorization gates.
+# ===========================================================================
+note "=== Step T — multitenancy (invite → register → cross-tenant view) ==="
+BOB_JAR="$TMP/bob-jar"
+
+# (a) Admin mints an invite; anon cannot even see the page.
+ANON_INV=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" "http://x/invites")
+[ "$ANON_INV" = "403" ] || { red "anon GET /invites expected 403, got $ANON_INV"; exit 1; }
+curl -s -o /dev/null --unix-socket "$SOCK" --cookie "$JAR" --data-urlencode "note=for bob" "http://x/invites"
+INVITE_TOK=$(sqlite3 "$DB" "SELECT token FROM invite WHERE used_by IS NULL ORDER BY created_at DESC LIMIT 1;")
+[ -n "$INVITE_TOK" ] || { red "admin mint invite produced no open invite row"; exit 1; }
+green "  ✓ admin minted an invite; anon /invites → 403"
+
+# (b) The register page validates the token.
+assert_status "$SOCK" "/register?invite=$INVITE_TOK" 200
+assert_status "$SOCK" "/register?invite=deadbeefdeadbeef" 404
+
+# (c) Username/password validation re-renders the form WITHOUT consuming the
+#     invite (a rejected attempt must not burn the token).
+reg() { curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" \
+          --data-urlencode "invite=$1" --data-urlencode "username=$2" \
+          --data-urlencode "password=$3" --data-urlencode "confirm=$4" "http://x/register"; }
+reg "$INVITE_TOK" "alice" "hunter2hunter" "hunter2hunter" >/dev/null   # taken
+reg "$INVITE_TOK" "admin" "hunter2hunter" "hunter2hunter" >/dev/null   # reserved
+reg "$INVITE_TOK" "bob"   "short"         "short"         >/dev/null   # too short
+assert_sql "$DB" "SELECT count(*) FROM invite WHERE token='$INVITE_TOK' AND used_by IS NULL;" "1" \
+  "rejected registrations do not consume the invite"
+assert_sql "$DB" "SELECT count(*) FROM actor WHERE username='admin' AND local=1;" "0" \
+  "reserved username not created"
+
+# (d) A valid registration creates the tenant, consumes the invite, opens a session.
+BOB_CODE=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" --cookie-jar "$BOB_JAR" \
+  --data-urlencode "invite=$INVITE_TOK" --data-urlencode "username=bob" \
+  --data-urlencode "password=swordfish99" --data-urlencode "confirm=swordfish99" \
+  --data-urlencode "name=Bob" "http://x/register")
+[ "$BOB_CODE" = "303" ] || { red "valid register expected 303, got $BOB_CODE"; exit 1; }
+assert_sql "$DB" "SELECT is_admin FROM actor WHERE username='bob' AND local=1;" "0" "bob is a non-admin tenant"
+assert_sql "$DB" "SELECT count(*) FROM invite WHERE token='$INVITE_TOK' AND used_by IS NOT NULL;" "1" \
+  "invite consumed on successful register"
+assert_status "$SOCK" "/register?invite=$INVITE_TOK" 404
+green "  ✓ registered tenant bob; the invite is single-use"
+
+# (e) bob's session works but bob is not an admin.
+BOB_INV=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" --cookie "$BOB_JAR" "http://x/invites")
+[ "$BOB_INV" = "403" ] || { red "non-admin bob GET /invites expected 403, got $BOB_INV"; exit 1; }
+green "  ✓ bob (non-admin) cannot reach /invites"
+
+# (f) Storage POST forbids local backends, accepts named cloud remotes.
+stor() { curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" --cookie "$BOB_JAR" \
+           --data-urlencode "rclone_conf=$1" --data-urlencode "archive_remote=$2" \
+           --data-urlencode "public_remote=$3" --data-urlencode "public_url_base=$4" "http://x/settings/storage"; }
+[ "$(stor '' "$TMP/x" "cloud:b" '')"            = "400" ] || { red "local-path archive must be rejected"; exit 1; }
+[ "$(stor 'type = local' "a:x" "b:y" '')"       = "400" ] || { red "type=local config must be rejected"; exit 1; }
+[ "$(stor '[a] type = s3' "a:arch" "a:pub" '')" = "303" ] || { red "named cloud remotes must be accepted"; exit 1; }
+green "  ✓ storage POST rejects local backends, accepts named cloud remotes"
+
+# (g) Seed bob's REAL storage directly with a non-empty rclone.conf defining a
+#     NAMED remote. The settings UI forbids local backends, but the test env IS
+#     local — so we seed a "bobarch" local-type remote via SQL (the same shape
+#     a cloud config would take). This exercises the full per-tenant path at
+#     runtime: config materialisation (csrc/fs_bridge.c → a 0600 file) AND the
+#     `rclone --config <that file>` invocation. Then bob uploads.
+mkdir -p "$TMP/bob-archive" "$TMP/bob-public"
+BOB_CONF=$'[bobarch]\ntype = local\n'
+sqlite3 "$DB" "INSERT OR REPLACE INTO tenant_storage (actor_id, rclone_conf, archive_remote, public_remote, public_url_base, updated_at) VALUES ('http://localhost/users/bob', '$BOB_CONF', 'bobarch:$TMP/bob-archive', 'bobarch:$TMP/bob-public', 'http://example.test/bobdl', '2026-06-28T00:00:00Z');"
+BOB_ITEM=$(upload "$SOCK" "$BOB_JAR" "$PDF_TWO" "Bob's PDF" "" "bob reviews it" "2" "")
+BOB_SLUG=$(basename "$BOB_ITEM")
+assert_sql "$DB" "SELECT username FROM actor a JOIN item i ON i.owner_id=a.id WHERE i.id='http://localhost/items/$BOB_SLUG';" "bob" \
+  "bob's upload is owned by bob"
+[ -f "$TMP/bob-archive/$BOB_SLUG" ] || { red "bob's blob should land in HIS archive remote (via --config)"; exit 1; }
+# bob's config was materialised to a private 0600 file (secrets off argv/env).
+BOB_CONF_FILE="$DATA/storage/http___localhost_users_bob.conf"
+[ -f "$BOB_CONF_FILE" ] || { red "bob's rclone config was not materialised to a file"; exit 1; }
+BOB_PERM=$(stat -f '%Lp' "$BOB_CONF_FILE" 2>/dev/null || stat -c '%a' "$BOB_CONF_FILE")
+[ "$BOB_PERM" = "600" ] || { red "materialised config perms = $BOB_PERM, want 600"; exit 1; }
+green "  ✓ bob uploaded via HIS rclone config (materialised 0600, passed as --config)"
+
+# (h) THE CORE FEATURE: a DIFFERENT tenant (admin alice) downloads bob's
+#     archived file — streamed through bob's config — byte-exact.
+ALICE_DL=$(curl -s -o "$TMP/alice-got.pdf" -w '%{http_code}' --unix-socket "$SOCK" --cookie "$JAR" "http://x/items/$BOB_SLUG/file")
+[ "$ALICE_DL" = "200" ] || { red "cross-tenant download expected 200, got $ALICE_DL"; exit 1; }
+cmp -s "$TMP/alice-got.pdf" "$PDF_TWO" || { red "cross-tenant download bytes differ from bob's file"; exit 1; }
+green "  ✓ alice downloaded bob's file, byte-exact, via bob's config"
+
+# (i) Anon cannot download; a non-owner cannot mutate.
+ANON_DL=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" "http://x/items/$BOB_SLUG/file")
+[ "$ANON_DL" = "403" ] || { red "anon file download expected 403, got $ANON_DL"; exit 1; }
+ALICE_PUB=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" --cookie "$JAR" --data "" "http://x/items/$BOB_SLUG/publish-file")
+[ "$ALICE_PUB" = "403" ] || { red "non-owner publish expected 403, got $ALICE_PUB"; exit 1; }
+green "  ✓ anon download forbidden; a non-owner cannot publish/mutate bob's item"
+
+# (j) The shared archive attributes each item to its author. Use search (a
+#     deterministic single-item result) rather than the global feed, which
+#     paginates and ties on same-second timestamps in the hermetic run.
+assert_grep "$(fetch_html_anon "$SOCK" "/search?q=Bob")" 'by <a href="/users/bob">bob</a>' \
+  "search attributes bob's item to bob"
+green "  ✓ the shared archive attributes items across tenants"
+
 green ""
 green "=========================================="
 green "  e2e (socket) passed.  data dir: $DATA"

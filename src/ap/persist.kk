@@ -14,9 +14,21 @@ import effects/rng
 import effects/config
 import ap/activity
 
-// The URL identifying the local actor.
+// The URL identifying the BOOTSTRAP (admin) local actor — the env-configured
+// tenant. Multitenant code threads the ACTING actor explicitly instead; this
+// remains for the CLI and the admin-scoped fallbacks.
 pub fun local-actor-url() : config url
   get-base-url() ++ "/users/" ++ get-local-username()
+
+// The actor-id of a local tenant with this username, or "" if there is no
+// such local actor. The multi-user AP handlers (actor/outbox/followers/inbox/
+// webfinger) resolve the requested username through here instead of comparing
+// against the single configured username.
+pub fun local-actor-id-for( username : string ) : db url
+  query(
+    "SELECT id FROM actor WHERE local = 1 AND username = ? LIMIT 1",
+    [txt(username)]
+  ).first-text.default("")
 
 // Mint a fresh activity ID. The `kind` is a URL segment ("activities"
 // for normal activities, "items" for objects).
@@ -37,14 +49,17 @@ pub fun record-activity( body : json, a : ap-activity, inbox-remote : bool )
   )
   ()
 
-// Queue an outbound delivery of activity `aid` to `inbox-url`.
-pub fun queue-delivery( aid : url, inbox-url : url )
-  : <db,time,config|e> ()
+// Queue an outbound delivery of activity `aid`, sent by `sender` (the acting
+// local actor), to `inbox-url`. `sender_id` drives which actor's private key
+// the delivery worker signs the POST with, so it MUST be the activity's
+// actor — this is how each tenant federates under its own key.
+pub fun queue-delivery( aid : url, inbox-url : url, sender : url )
+  : <db,time|e> ()
   val now = now-iso()
   val _ = exec(
     "INSERT INTO delivery (activity_id, sender_id, inbox_url, next_attempt, " ++
     "attempts, state) VALUES (?,?,?,?,?,?)",
-    [txt(aid), txt(local-actor-url()), txt(inbox-url),
+    [txt(aid), txt(sender), txt(inbox-url),
      txt(now), num(0), txt("pending")]
   )
   ()

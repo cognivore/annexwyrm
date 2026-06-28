@@ -12,12 +12,13 @@
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
--- The local actor. There is one row in practice; the table exists so the
--- code can pretend it is multi-tenant and a future migration to a server
--- with many local actors is a single column rename.
+-- Local + cached-remote actors. Multitenant: there are MANY local actors
+-- (rows with local=1), one per tenant, each with its own keypair and login.
+-- The bootstrap actor (created at `init` from the env username) is the admin
+-- (is_admin=1) and the only one who can mint invites.
 CREATE TABLE IF NOT EXISTS actor (
     id              TEXT PRIMARY KEY,           -- https://domain/users/name
-    local           INTEGER NOT NULL,           -- 1 = us, 0 = a cached remote
+    local           INTEGER NOT NULL,           -- 1 = a local tenant, 0 = a cached remote
     username        TEXT NOT NULL,              -- 'alice'
     domain          TEXT NOT NULL,              -- 'annexwyrm.example.com'
     name            TEXT,                       -- display name, may be NULL
@@ -32,11 +33,18 @@ CREATE TABLE IF NOT EXISTS actor (
     private_key_pem TEXT,                       -- only for local actors
     manually_approves INTEGER NOT NULL DEFAULT 0,
     discoverable    INTEGER NOT NULL DEFAULT 1,
+    is_admin        INTEGER NOT NULL DEFAULT 0, -- 1 = may mint invites (the bootstrap tenant)
     created_at      TEXT NOT NULL,
     fetched_at      TEXT                        -- last refresh for remotes
 );
+-- Usernames are unique among local actors on a domain (one tenant per name).
 CREATE UNIQUE INDEX IF NOT EXISTS actor_local_user
     ON actor(domain, username) WHERE local = 1;
+
+-- Migration for DBs created before multitenancy: the C bridge
+-- (csrc/db_bridge.c, aw_migrate_actor) probes PRAGMA table_info(actor) and
+-- runs this idempotently on every open/init.
+--   ALTER TABLE actor ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0;
 
 -- A login for a local actor. Password is argon2id.
 CREATE TABLE IF NOT EXISTS local_login (
@@ -187,3 +195,34 @@ CREATE TABLE IF NOT EXISTS setting (
     key             TEXT PRIMARY KEY,
     value           TEXT NOT NULL
 );
+
+-- Per-tenant blob backend. Each local actor brings its OWN rclone config and
+-- remote targets: its uploads land on its own cloud, and when another tenant
+-- views one of its files the daemon decrypts/streams through THIS config.
+-- `rclone_conf` is the verbatim rclone.conf text (carries cloud secrets);
+-- it is materialised to a 0600 file under <data-dir>/storage/ on demand and
+-- passed to rclone via `--config`. An empty `rclone_conf` means "use the
+-- daemon's ambient ~/.config/rclone" — the bootstrap/admin tenant, whose
+-- remotes come from the ANNEXWYRM_*_REMOTE env vars (seeded at startup).
+CREATE TABLE IF NOT EXISTS tenant_storage (
+    actor_id        TEXT PRIMARY KEY REFERENCES actor(id) ON DELETE CASCADE,
+    rclone_conf     TEXT NOT NULL DEFAULT '',   -- verbatim rclone.conf; '' = ambient
+    archive_remote  TEXT NOT NULL,              -- e.g. 'archive-crypt:annexwyrm'
+    public_remote   TEXT NOT NULL,              -- e.g. 'public:annexwyrm-public'
+    public_url_base TEXT NOT NULL DEFAULT '',   -- CDN/test seam; '' = `rclone link`
+    updated_at      TEXT NOT NULL
+);
+
+-- Invite-only registration. An admin mints a single-use token; /register
+-- consumes it to create a new local actor. `used_by` NULL ⇒ still open;
+-- a token is valid while open AND expires_at > now().
+CREATE TABLE IF NOT EXISTS invite (
+    token           TEXT PRIMARY KEY,           -- 256-bit random hex
+    created_by      TEXT NOT NULL REFERENCES actor(id) ON DELETE CASCADE,
+    note            TEXT NOT NULL DEFAULT '',   -- admin's memo
+    created_at      TEXT NOT NULL,
+    expires_at      TEXT NOT NULL,              -- ISO 8601; open while > now()
+    used_by         TEXT,                       -- actor id once consumed; NULL while open
+    used_at         TEXT
+);
+CREATE INDEX IF NOT EXISTS invite_open ON invite(used_by, expires_at);

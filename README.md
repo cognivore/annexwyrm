@@ -15,6 +15,20 @@ as you like (`[+]` adds another row). The same `Document`/`Audio`/`Video`
 serialised over the wire lists every mirror in its `url` array — the spec
 allows this and modern fediverse clients pick a working one.
 
+## Multitenant, invite-only
+
+One annexwyrm instance hosts **many tenants**. Registration is **invite-only**:
+the admin (the bootstrap actor) mints a single-use link at `/invites`, and
+`/register?invite=<token>` creates a new tenant. All tenants share one
+browsable archive — **anyone logged in can view (download) anyone's files** —
+but **each tenant brings its own rclone/backup configuration**: a tenant's
+uploads land on *that tenant's* cloud, and a cross-tenant download is
+decrypted/streamed through the **owner's** rclone config, never the viewer's.
+Each tenant is a first-class fediverse actor signing with its own key.
+
+The full design, authorization rules, storage flow, and security/trust
+boundaries are in [`docs/MULTITENANCY.md`](docs/MULTITENANCY.md).
+
 There is **no JavaScript**. Pages are rendered server-side; forms POST
 `multipart/form-data`; navigation is page refreshes. The aesthetic is
 Reddit v1 / `lainchan` — dense text on cream, almost no chrome.

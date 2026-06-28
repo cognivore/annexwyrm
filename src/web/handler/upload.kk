@@ -27,9 +27,11 @@ import effects/config
 import effects/store
 import effects/crypto
 import annex/item
+import annex/storage   // tenant-store, load-tenant-store, archive-loc
 import ap/outbox
 import ap/persist
 import web/prefs
+import web/session     // is-tenant-session, session-actor
 import web/server
 import web/multipart
 import web/html/upload
@@ -37,12 +39,16 @@ import web/handler/item
 import interp/str   // byte-count: a total C-backed primitive (see below)
 
 pub fun handle-upload-form( req : request ) : <db,config|e> response
-  if !is-owner-session(req) then forbidden("login required")
+  if !is-tenant-session(req) then forbidden("login required")
   else ok-html(render-upload-form(get-page-width()))
 
+// Any logged-in tenant may upload; the item is owned by that tenant and (for
+// file uploads) stored in THEIR rclone backend. A file-less review needs no
+// storage; a file upload requires the tenant to have configured storage.
 pub fun handle-upload-post( req : request )
   : <db,time,rng,log,config,store,crypto,div|e> response
-  if !is-owner-session(req) then forbidden("login required")
+  val owner = session-actor(req)
+  if owner == "" then forbidden("login required")
   else
     val ct = req.header("content-type").default("")
     match parse-multipart(ct, req.body)
@@ -59,22 +65,25 @@ pub fun handle-upload-post( req : request )
           // optional now — annexwyrm reviews are not only file archives.
           Nil ->
             val name = parts.field("name").default("")
-            ingest-textonly(name, summary, content, rating, in-reply-to, tags)
+            ingest-textonly(name, summary, content, rating, in-reply-to, tags, owner)
           Cons(f, _) ->
-            val name = parts.field("name").default(f.filename)
-            // The publish-file checkbox: present (any value) ⇒ publish now.
-            val publish-now = parts.field("publish_file").is-just
-            ingest(f, name, summary, content, rating, in-reply-to, publish-now, tags)
+            match load-tenant-store(owner)
+              Nothing ->
+                server-error("configure your storage in settings before uploading files")
+              Just(ts) ->
+                val name = parts.field("name").default(f.filename)
+                // The publish-file checkbox: present (any value) ⇒ publish now.
+                val publish-now = parts.field("publish_file").is-just
+                ingest(f, name, summary, content, rating, in-reply-to, publish-now, tags, owner, ts)
 
 // A file-less review: build a Note-kind item with no blob (byte 0, no sha,
 // no remotes, not published), persist it + its tags, and federate the Create.
 // Mirrors ingest's tail but skips all the blob machinery.
 fun ingest-textonly(
     name : string, summary : string, content : string,
-    rating : int, in-reply-to : string, tags : list<string>
+    rating : int, in-reply-to : string, tags : list<string>, owner : url
   ) : <db,time,rng,log,config,div|e> response
   val now = now-iso()
-  val owner = get-base-url() ++ "/users/" ++ get-local-username()
   val slug = rand-hex(12)
   val id = get-base-url() ++ "/items/" ++ slug
   val it = Annex-item(
@@ -100,10 +109,11 @@ fun ingest(
     rating : int,
     in-reply-to : string,
     publish-now : bool,
-    tags : list<string>
+    tags : list<string>,
+    owner : url,
+    ts : tenant-store
   ) : <db,time,rng,log,config,store,crypto,div|e> response
   val now = now-iso()
-  val owner = get-base-url() ++ "/users/" ++ get-local-username()
   val slug = rand-hex(12)
   val id = get-base-url() ++ "/items/" ++ slug
   val media = if f.media-type == "" then "application/octet-stream" else f.media-type
@@ -114,21 +124,21 @@ fun ingest(
   val byte-size = byte-count(f.body)
 
   // --- Mandatory archive put -------------------------------------------
-  // Copy the blob to the encrypted archive remote and VERIFY it landed.
-  // The store effect has no failure channel, so we probe with blob-has;
-  // a failed/half-written put aborts the upload BEFORE any item row or
-  // Create exists. This is the single most important invariant here.
-  val archive-loc = Blob-loc(get-archive-remote(), slug)
+  // Copy the blob to the tenant's encrypted archive remote and VERIFY it
+  // landed. The store effect has no failure channel, so we probe with
+  // blob-has; a failed/half-written put aborts the upload BEFORE any item row
+  // or Create exists. This is the single most important invariant here.
+  val archive-loc = ts.archive-loc(slug)
   blob-put(archive-loc, f.body)
   if !blob-has(archive-loc) then
     error("upload/archive-put-failed",
-      [("remote", get-archive-remote()), ("slug", slug)])
+      [("remote", ts.archive), ("slug", slug)])
     server-error("archive put failed: blob could not be written to " ++
-                 get-archive-remote())
+                 ts.archive)
   else
     // Record the archive mirror row (published=0, the encrypted backend).
     val archive-remote = Item-remote(
-      RkRclone, get-archive-remote() ++ "/" ++ slug, media,
+      RkRclone, ts.archive ++ "/" ++ slug, media,
       "archive (encrypted)", False, 0
     )
     val mt-kind = guess-kind(media)
@@ -155,13 +165,13 @@ fun ingest(
     else
       // Publish the file inline: the bytes are still in hand (f.body), so
       // we do NOT round-trip through the archive remote here.
-      if publish-file-blob(it1, slug, f.body) then
+      if publish-file-blob(it1, slug, f.body, ts) then
         info("upload/done",
           [("id", id), ("size", byte-size.show), ("file_published", "1")])
         see-other("/items/" ++ slug)
       else
         server-error("public put failed: blob could not be published to " ++
-                     get-public-remote())
+                     ts.pubrem)
 
 fun guess-kind( media : string ) : object-kind
   match media-type/parse(media)

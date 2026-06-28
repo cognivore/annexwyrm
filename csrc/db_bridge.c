@@ -356,6 +356,26 @@ static const char ANNEXWYRM_SCHEMA[] =
   "CREATE INDEX IF NOT EXISTS delivery_ready ON delivery(state, next_attempt);"
   "CREATE TABLE IF NOT EXISTS setting ("
   "  key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+  /* Multitenancy. Per-tenant blob backend: each local actor brings its own
+   * rclone config + remote targets, so its uploads land on ITS cloud and a
+   * cross-tenant read decrypts through ITS config. rclone_conf '' = use the
+   * daemon's ambient ~/.config/rclone (the bootstrap/admin tenant). */
+  "CREATE TABLE IF NOT EXISTS tenant_storage ("
+  "  actor_id TEXT PRIMARY KEY REFERENCES actor(id) ON DELETE CASCADE,"
+  "  rclone_conf TEXT NOT NULL DEFAULT '',"
+  "  archive_remote TEXT NOT NULL,"
+  "  public_remote TEXT NOT NULL,"
+  "  public_url_base TEXT NOT NULL DEFAULT '',"
+  "  updated_at TEXT NOT NULL);"
+  /* Invite-only registration. An admin mints a single-use token; /register
+   * consumes it to create a new local actor. used_by NULL ⇒ still open. */
+  "CREATE TABLE IF NOT EXISTS invite ("
+  "  token TEXT PRIMARY KEY,"
+  "  created_by TEXT NOT NULL REFERENCES actor(id) ON DELETE CASCADE,"
+  "  note TEXT NOT NULL DEFAULT '',"
+  "  created_at TEXT NOT NULL, expires_at TEXT NOT NULL,"
+  "  used_by TEXT, used_at TEXT);"
+  "CREATE INDEX IF NOT EXISTS invite_open ON invite(used_by, expires_at);"
 ;
 
 /* Idempotent column-add migration for the `item` table. SQLite has no
@@ -428,19 +448,52 @@ static int aw_migrate_item(sqlite3* db) {
   return SQLITE_OK;
 }
 
+/* Idempotent column-add for the `actor` table — same probe-then-ALTER shape
+ * as aw_migrate_item. Adds is_admin to DBs created before multitenancy. A
+ * fresh `init` already has the column (the schema batch declares it), so the
+ * probe short-circuits the ADD. The bootstrap actor is then promoted to admin
+ * by the Koka init code (UPDATE … WHERE local=1), not here. */
+static int aw_actor_has_column(sqlite3* db, const char* col) {
+  sqlite3_stmt* st = NULL;
+  int found = 0;
+  if (sqlite3_prepare_v2(db, "PRAGMA table_info(actor);", -1, &st, NULL) != SQLITE_OK) {
+    return 0;
+  }
+  while (sqlite3_step(st) == SQLITE_ROW) {
+    const unsigned char* name = sqlite3_column_text(st, 1); /* col 1 = name */
+    if (name && strcmp((const char*)name, col) == 0) { found = 1; break; }
+  }
+  sqlite3_finalize(st);
+  return found;
+}
+
+static int aw_migrate_actor(sqlite3* db) {
+  if (!aw_actor_has_column(db, "id")) {
+    return SQLITE_OK; /* no actor table yet — schema batch will create it */
+  }
+  if (!aw_actor_has_column(db, "is_admin")) {
+    return sqlite3_exec(db,
+      "ALTER TABLE actor ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0;",
+      NULL, NULL, NULL);
+  }
+  return SQLITE_OK;
+}
+
 kk_integer_t kk_aw_db_init_schema(kk_integer_t h_i, kk_context_t* ctx) {
   int h = (int)kk_integer_clamp32(h_i, ctx);
   int rc = SQLITE_ERROR;
   if (h > 0 && h < MAX_HANDLES && g_handles[h]) {
     rc = sqlite3_exec(g_handles[h], ANNEXWYRM_SCHEMA, NULL, NULL, NULL);
-    /* Run the migration even if the schema batch errored: aw_migrate_item
-     * is a no-op when the item table is missing (existence-guarded), and
-     * an unrelated schema-batch failure must not silently skip the column
-     * adds — the daemon would then surface "no such column" at runtime
-     * instead of the real error. The schema rc stays the reported result. */
+    /* Run the migrations even if the schema batch errored: each is a no-op
+     * when its table is missing (existence-guarded), and an unrelated
+     * schema-batch failure must not silently skip the column adds — the
+     * daemon would then surface "no such column" at runtime instead of the
+     * real error. The schema rc stays the reported result. */
     {
       int mrc = aw_migrate_item(g_handles[h]);
       if (rc == SQLITE_OK) rc = mrc;
+      int arc = aw_migrate_actor(g_handles[h]);
+      if (rc == SQLITE_OK) rc = arc;
     }
   }
   return kk_integer_from_int(rc, ctx);

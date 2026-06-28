@@ -47,6 +47,7 @@ import ap/inbox
 import ap/deliver_worker
 import ap/persist
 import annex/item         // fresh-item, for `delete` (build a minimal shell)
+import annex/storage      // seed the admin tenant's storage row from env
 import web/handler/item   // load-item, for `publish` (re-announce)
 import web/route
 import web/server
@@ -92,6 +93,7 @@ fun cmd-init( data-dir : string ) : io ()
     info("init/db-opened", [("path", db-path)])
     create-local-actor-if-absent()
     install-password-if-set()
+    bootstrap-admin()
     println("annexwyrm initialised in " ++ data-dir)
 
 fun apply-schema( h : int ) : <io,log|e> ()
@@ -141,6 +143,24 @@ fun install-password-if-set()
       info("init/no-password",
         [("hint", "set ANNEXWYRM_PASSWORD before `just init` to enable login")])
 
+// Promote the env-configured bootstrap actor to admin and (re)seed its
+// storage row from the environment. Run on BOTH `init` and `serve` start: the
+// admin's blob backend is env-managed (ANNEXWYRM_*_REMOTE), so a restart with
+// the operative env wins — this is also why the e2e, whose archive/public env
+// is set on `serve` (not `init`), gets the right temp-dir remotes. The admin's
+// rclone_conf is "" (the daemon's ambient ~/.config/rclone). New tenants
+// configure their own storage via /settings; this never touches their rows.
+fun bootstrap-admin() : <db,time,config,log|e> ()
+  match query("SELECT id FROM actor WHERE local = 1 AND username = ? AND domain = ?",
+              [txt(get-local-username()), txt(get-domain())]).first-text
+    Nothing -> info("bootstrap/no-admin-actor", [("user", get-local-username())])
+    Just(admin-id) ->
+      val _ = exec("UPDATE actor SET is_admin = 1 WHERE id = ?", [txt(admin-id)])
+      save-tenant-store(admin-id, "", get-archive-remote(),
+                        get-public-remote(), get-public-url-base())
+      info("bootstrap/admin-storage-seeded",
+        [("actor", admin-id), ("archive", get-archive-remote())])
+
 // ----------------------------------------------------------------------
 //  serve: the HTTP loop
 // ----------------------------------------------------------------------
@@ -165,6 +185,9 @@ fun cmd-serve() : io ()
     // file-publication columns without a separate `init`.
     apply-schema(h)
     with with-sqlite-db(h)
+    // Keep the admin tenant's flag + storage in sync with the env on each
+    // start (see bootstrap-admin). New tenants are untouched.
+    bootstrap-admin()
     val socket-path = env-or-socket()
     val fd = kk-aw-listen(socket-path)
     if fd < 0 then
@@ -339,7 +362,7 @@ fun cmd-follow( target-url : string ) : io ()
   else
     with with-sqlite-db(h)
     info("cli/follow", [("target", target-url)])
-    emit-follow(target-url)
+    emit-follow(target-url, get-base-url() ++ "/users/" ++ get-local-username())
 
 fun cmd-unfollow( target-url : string ) : io ()
   with with-env-config
@@ -353,4 +376,4 @@ fun cmd-unfollow( target-url : string ) : io ()
   else
     with with-sqlite-db(h)
     info("cli/unfollow", [("target", target-url)])
-    emit-undo-follow(target-url)
+    emit-undo-follow(target-url, get-base-url() ++ "/users/" ++ get-local-username())

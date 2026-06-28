@@ -8,13 +8,14 @@ import core/url
 import effects/db
 import effects/config
 import ap/collection
+import ap/persist   // local-actor-id-for
 import web/server
 
 pub fun handle-followers( req : request, u : string )
   : <db,config,div|e> response
-  if u != get-local-username() then not-found("no such user")
+  val actor-url = local-actor-id-for(u)
+  if actor-url == "" then not-found("no such user")
   else
-    val actor-url = get-base-url() ++ "/users/" ++ u
     val base = actor-url ++ "/followers"
     val total = query(
       "SELECT COUNT(*) FROM follow WHERE target_id = ? AND state = 'accepted'",
@@ -30,9 +31,9 @@ pub fun handle-followers( req : request, u : string )
 
 pub fun handle-following( req : request, u : string )
   : <db,config,div|e> response
-  if u != get-local-username() then not-found("no such user")
+  val actor-url = local-actor-id-for(u)
+  if actor-url == "" then not-found("no such user")
   else
-    val actor-url = get-base-url() ++ "/users/" ++ u
     val base = actor-url ++ "/following"
     val total = query(
       "SELECT COUNT(*) FROM follow WHERE follower_id = ? AND state = 'accepted'",

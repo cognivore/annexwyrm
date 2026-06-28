@@ -77,7 +77,9 @@ non-obvious quirks worth flagging:
 What it took to get this far otherwise: changing all extern effects
 from `io` to `ndet` / `<ndet,net>` / `<ndet,fsys>`, single-clause `with
 handler` blocks instead of stacked `with fun X`, escaping every `raw`
-/ `pub` / `handle` identifier (those are Koka keywords), renaming
+/ `pub` / `public` / `handle` identifier (those are Koka keywords — a
+struct field or variable named `public` is a parse error; the storage
+struct uses `pubrem`), renaming
 `dispatch-or-400` to `dispatch-or-bad` (identifiers must not end in a
 digit-after-dash), and importing `ap/activity` explicitly in `annexwyrm.kk`
 even though it's transitively visible through `ap/outbox`.
@@ -273,6 +275,34 @@ client_max_body_size aligned to the daemon's 64 MiB cap. See deploy.sh notes.
 Regression tests: federation F7.1 (forged actor → 401), F7.2 (stale-Date
 replay → 401), F7.3 (JSON depth-bomb → 400, daemon survives); socket Step L
 (control-byte DB round-trip, byte-exact hex).
+
+## Multitenancy (2026-06-28)
+
+annexwyrm is now multi-tenant + invite-only. The full design is in
+`docs/MULTITENANCY.md`; the load-bearing facts for this file:
+
+- **Many local actors.** `actor` has `is_admin`; the bootstrap actor (env
+  `ANNEXWYRM_USERNAME`) is admin. New tenants register via single-use invite
+  tokens (`invite` table) at `/register?invite=<token>`.
+- **Per-tenant storage.** `tenant_storage` holds each tenant's rclone config
+  + remote targets. `blob-loc` carries the owner's materialised `--config`
+  path (0600 file under `<data-dir>/storage/`, written by `csrc/fs_bridge.c`)
+  and url-base. Every blob op resolves the OWNER's store (`annex/storage.kk`),
+  so a tenant's bytes ride its own cloud and a cross-tenant read decrypts
+  through the owner's config. The admin's row is env-seeded on `init`+`serve`
+  (`bootstrap-admin`), rclone_conf `''` = ambient — so prod/e2e are unchanged.
+- **Auth.** `web/session.kk` replaces `is-owner-session` with `session-actor`
+  / `is-tenant-session` / `is-owner-of(item.owner)` / `is-admin-session`. File
+  download is any-tenant; item mutation is owner-only; invites are admin-only.
+- **Federation is per-actor.** The outbox threads the acting actor
+  (`item.owner` for Create/Update/Delete; the session actor for
+  Follow/Like/Announce); `delivery.sender_id` already drove which key signs.
+- **Security boundary.** A tenant's rclone config is semi-trusted input. The
+  settings POST forbids local/alias backends and non-named targets, but a
+  determined config still reaches the network as the daemon user — run
+  annexwyrm as a low-priv user and only invite vetted tenants (see the doc).
+- e2e: `tests/e2e/run.sh` Step T covers invite → register → cross-tenant
+  download → authz gates. Federation + caddy suites stay green.
 
 ### Standing follow-ups (low priority, accepted for now)
 - exec()/query() return -1 on bind/SQLITE_BUSY is not surfaced to callers.

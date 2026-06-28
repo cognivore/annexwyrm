@@ -17,24 +17,27 @@ import web/html/actor
 
 pub fun handle-actor( req : request, u : string )
   : <db,config,div|e> response
-  if u != get-local-username() then not-found("no such user")
-  else
-    val a = load-local-actor()
-    if prefers-jsonld(req)
-      then ok-jsonld(json/show(ap-actor/to-json(a)))
-      else ok-html(render-actor-page(a, recent-items(), get-page-width()))
+  match load-local-actor-by-username(u)
+    Nothing -> not-found("no such user")
+    Just(a) ->
+      if prefers-jsonld(req)
+        then ok-jsonld(json/show(ap-actor/to-json(a)))
+        else ok-html(render-actor-page(a, recent-items(a.id), get-page-width()))
 
-// Load the canonical local actor row from the DB.
-pub fun load-local-actor() : <db,config|e> ap-actor
+// Load a local tenant's actor row by username. Nothing when there is no such
+// local actor (the handler then 404s — multitenant: many local actors exist,
+// so a missing username is a real not-found, not a misconfiguration).
+pub fun load-local-actor-by-username( u : string ) : <db,config|e> maybe<ap-actor>
   val rows = query(
     "SELECT id, username, name, summary, icon_url, inbox, outbox, " ++
     "followers, following, COALESCE(shared_inbox, ''), public_key_pem, " ++
-    "manually_approves, discoverable FROM actor WHERE local = 1 LIMIT 1",
-    []
+    "manually_approves, discoverable FROM actor WHERE local = 1 AND username = ? LIMIT 1",
+    [txt(u)]
   )
   match rows
+    Nil -> Nothing
     Cons(r, _) ->
-      Ap-actor(
+      Just(Ap-actor(
         id                 = text(r.col(0)),
         kind               = AkPerson,
         preferred-username = text(r.col(1)),
@@ -50,10 +53,7 @@ pub fun load-local-actor() : <db,config|e> ap-actor
         public-key-pem     = text(r.col(10)),
         manually-approves  = int-bool(r.col(11)),
         discoverable       = int-bool(r.col(12))
-      )
-    Nil ->
-      // Should never happen post-install; render a placeholder.
-      build-local-actor(get-base-url(), get-local-username(), "", "", "")
+      ))
 
 fun text( v : sql-value ) : string
   match v { SqlText(s) -> s; _ -> "" }
@@ -61,13 +61,13 @@ fun text( v : sql-value ) : string
 fun int-bool( v : sql-value ) : bool
   match v { SqlInt(n) -> n != 0; _ -> False }
 
-// Up to 10 most recent items for the profile sidebar. Every item is public
-// in the single-tenant model, so there is no privacy filter.
-fun recent-items() : db list<recent-row>
+// Up to 10 most recent items for this tenant's profile sidebar. Every item is
+// public; the only filter is the owner (the profile shows that user's posts).
+fun recent-items( owner-id : url ) : db list<recent-row>
   val rows = query(
     "SELECT id, name, object_type, published_at FROM item " ++
-    "ORDER BY published_at DESC LIMIT 10",
-    []
+    "WHERE owner_id = ? ORDER BY published_at DESC LIMIT 10",
+    [txt(owner-id)]
   )
   rows.map(fn(r) Recent-row(
     id        = text(r.col(0)),

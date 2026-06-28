@@ -23,11 +23,12 @@ import ap/inbox
 import ap/sign
 import ap/actor
 import ap/actor_cache
+import ap/persist   // local-actor-id-for
 import web/server
 
 pub fun handle-user-inbox( req : request, u : string )
   : <db,time,rng,log,config,crypto,fetch,div|e> response
-  if u != get-local-username() then not-found("no such user")
+  if local-actor-id-for(u) == "" then not-found("no such user")
   else dispatch-inbox(req)
 
 pub fun handle-shared-inbox( req : request )

@@ -16,7 +16,9 @@ import ap/outbox
 import ap/persist
 import annex/item
 import annex/publish
+import annex/storage   // tenant-store, load-tenant-store, archive-loc, public-loc
 import web/prefs
+import web/session     // is-tenant-session, is-owner-of
 import web/server
 import web/multipart
 import web/html/item
@@ -26,7 +28,9 @@ import interp/str   // byte-count: a total C-backed primitive (see upload.kk)
 // Every item is always public: the review renders to ANYONE. There is no
 // owner-only item view and no 404-for-private branch — the only thing that
 // is gated is the file blob, and that is reflected on the page (archived vs
-// published download link), not in the route's authorization.
+// published download link), not in the route's authorization. The edit /
+// publish CONTROLS, though, show only to the item's OWNER (is-owner-of), not
+// to every logged-in tenant — a peer can read and download, but not mutate.
 pub fun handle-item( req : request, id : string )
   : <db,config,div|e> response
   val full-id = get-base-url() ++ "/items/" ++ id
@@ -41,66 +45,72 @@ pub fun handle-item( req : request, id : string )
       else
         val likes = count-likes(full-id)
         val shares = count-shares(full-id)
-        val owner = is-owner-session(req)
+        val owner = is-owner-of(req, it.owner)
         ok-html(render-item-page(it, likes, shares, owner, tags, get-page-width()))
 
 // POST /items/<id>/publish-file — open the archived file to the public.
-// Owner-gated, idempotent, and one-way for v1: it copies the blob to the
-// public remote, mints + stores the download URL, and emits an Update.
+// Gated to the item's OWNER, idempotent, and one-way for v1: it copies the
+// blob to the owner's public remote, mints + stores the download URL, and
+// emits an Update. The owner's own storage config backs every blob op.
 pub fun handle-item-publish-file( req : request, id : string )
   : <db,time,rng,log,config,store,div|e> response
-  if !is-owner-session(req) then forbidden("login required")
-  else
-    val full-id = get-base-url() ++ "/items/" ++ id
-    match load-item(full-id)
-      Nothing -> not-found("no such item")
-      Just(it) ->
-        // Idempotent: a second publish-file is a harmless no-op, NOT a
-        // double Update. Re-posting just redirects to the item.
-        if it.file-published then
-          see-other("/items/" ++ id)
-        else
+  val full-id = get-base-url() ++ "/items/" ++ id
+  match load-item(full-id)
+    Nothing -> not-found("no such item")
+    Just(it) ->
+      val who = session-actor(req)
+      if who == "" then forbidden("login required")
+      elif who != it.owner then forbidden("not your item")
+      // Idempotent: a second publish-file is a harmless no-op, NOT a
+      // double Update. Re-posting just redirects to the item.
+      elif it.file-published then
+        see-other("/items/" ++ id)
+      else match load-tenant-store(it.owner)
+        Nothing -> server-error("the owner has no storage configured")
+        Just(ts) ->
           val slug = id-tail(full-id)
           // The bytes are not in memory; fetch them back from the archive.
-          match blob-get(Blob-loc(get-archive-remote(), slug))
+          match blob-get(ts.archive-loc(slug))
             Nothing ->
               error("publish-file/archive-get-failed",
-                [("remote", get-archive-remote()), ("slug", slug)])
+                [("remote", ts.archive), ("slug", slug)])
               server-error("publish-file failed: could not read archived blob")
             Just(bytes) ->
-              if publish-file-blob(it, slug, bytes) then
+              if publish-file-blob(it, slug, bytes, ts) then
                 see-other("/items/" ++ id)
               else
                 server-error("public put failed: blob could not be published to " ++
-                             get-public-remote())
+                             ts.pubrem)
 
-// GET /items/<id>/file — OWNER-ONLY private download. Streams the blob from
-// the encrypted ARCHIVE remote (rclone decrypts on the way out) through this
-// authenticated route. This is how the owner reaches a file that is archived
-// (no public link): the bytes are served only over a valid owner session and
-// the blob never gets a public URL. Anonymous / non-owner requests are
-// forbidden — an archived file must leak nothing to anyone not logged in.
-// (A published file is reachable by everyone via its public link; this route
-// additionally lets the owner pull the canonical archived copy any time.)
+// GET /items/<id>/file — TENANT private download (the cross-tenant sharing
+// rule). Streams the blob from the encrypted ARCHIVE remote (rclone decrypts
+// on the way out) through this authenticated route. ANY logged-in tenant may
+// pull ANY item's archived bytes — that is the "tenants view each other's
+// files" promise — but the decrypt always runs through the OWNER's storage
+// config (load-tenant-store(it.owner)), never the viewer's. Anonymous
+// requests are forbidden: an archived file leaks nothing to the logged-out
+// public; only the published public link (external) is world-reachable.
 pub fun handle-item-file( req : request, id : string )
   : <db,config,store,div|e> response
-  if !is-owner-session(req) then forbidden("login required")
+  if !is-tenant-session(req) then forbidden("login required")
   else
     val full-id = get-base-url() ++ "/items/" ++ id
     match load-item(full-id)
       Nothing -> not-found("no such item")
       Just(it) ->
         if !(it.byte-size > 0 || it.remotes.is-cons) then not-found("no file")
-        else
-          val slug = id-tail(full-id)
-          match blob-get(Blob-loc(get-archive-remote(), slug))
-            Nothing -> not-found("file not found in archive")
-            Just(bytes) ->
-              val ct = if it.media-type == "" then "application/octet-stream"
-                       else it.media-type
-              ok-binary(ct, bytes)
-                .with-header("Content-Disposition",
-                  "attachment; filename=\"" ++ safe-filename(it, slug) ++ "\"")
+        else match load-tenant-store(it.owner)
+          Nothing -> not-found("file not found in archive")
+          Just(ts) ->
+            val slug = id-tail(full-id)
+            match blob-get(ts.archive-loc(slug))
+              Nothing -> not-found("file not found in archive")
+              Just(bytes) ->
+                val ct = if it.media-type == "" then "application/octet-stream"
+                         else it.media-type
+                ok-binary(ct, bytes)
+                  .with-header("Content-Disposition",
+                    "attachment; filename=\"" ++ safe-filename(it, slug) ++ "\"")
 
 // A header-safe download filename: keep only plain word chars, dot, dash,
 // underscore and space (so no quote / CR / LF can break the
@@ -117,12 +127,14 @@ fun safe-filename( it : annex-item, slug : string ) : string
 // non-owners are forbidden (the form is the only way to mutate a review).
 pub fun handle-item-edit-form( req : request, id : string )
   : <db,config|e> response
-  if !is-owner-session(req) then forbidden("login required")
-  else
-    val full-id = get-base-url() ++ "/items/" ++ id
-    match load-item(full-id)
-      Nothing -> not-found("no such item")
-      Just(it) -> ok-html(render-edit-form(it, id, load-item-tags(full-id), get-page-width()))
+  val full-id = get-base-url() ++ "/items/" ++ id
+  match load-item(full-id)
+    Nothing -> not-found("no such item")
+    Just(it) ->
+      val who = session-actor(req)
+      if who == "" then forbidden("login required")
+      elif who != it.owner then forbidden("not your item")
+      else ok-html(render-edit-form(it, id, load-item-tags(full-id), get-page-width()))
 
 // POST /items/<id>/edit — apply a review edit AND any file change, then
 // federate a single Update. Owner-gated. Body is multipart/form-data so the
@@ -144,12 +156,14 @@ pub fun handle-item-edit-form( req : request, id : string )
 // remote, so the download truly stops (not just a hidden link).
 pub fun handle-item-edit-post( req : request, id : string )
   : <db,time,rng,log,config,store,crypto,div|e> response
-  if !is-owner-session(req) then forbidden("login required")
-  else
-    val full-id = get-base-url() ++ "/items/" ++ id
-    match load-item(full-id)
-      Nothing -> not-found("no such item")
-      Just(it) ->
+  val full-id = get-base-url() ++ "/items/" ++ id
+  match load-item(full-id)
+    Nothing -> not-found("no such item")
+    Just(it) ->
+      val who = session-actor(req)
+      if who == "" then forbidden("login required")
+      elif who != it.owner then forbidden("not your item")
+      else
         val ct = req.header("content-type").default("")
         match parse-multipart(ct, req.body)
           Nothing -> bad-request("expected multipart/form-data")
@@ -167,9 +181,16 @@ pub fun handle-item-edit-post( req : request, id : string )
               Just(tval) -> parse-tags(tval)
               Nothing    -> load-item-tags(full-id)
             val now = now-iso()
-            val base = edit-item-fields(it, name, summary, content, rating, in-reply-to, now)
             val slug = id-tail(full-id)
-            if apply-file-change(base, it.file-published, files(parts).head, want-public, slug, now, new-tags) then
+            // The owner's storage (Nothing if unconfigured) backs any blob op.
+            // A text-only edit of a file-less review needs none of it, so we
+            // pass it as maybe and only the blob branches require it. Resolve
+            // it BEFORE building `base`: an effectful bind between building the
+            // annex-item value struct and consuming it would capture it in an
+            // mlift lambda and trip koka#654.
+            val ts-opt = load-tenant-store(it.owner)
+            val base = edit-item-fields(it, name, summary, content, rating, in-reply-to, now)
+            if apply-file-change(base, it.file-published, files(parts).head, want-public, slug, now, new-tags, ts-opt) then
               info("item/edited", [("id", full-id), ("rating", rating.show)])
               see-other("/items/" ++ id)
             else
@@ -193,63 +214,85 @@ pub fun handle-item-edit-post( req : request, id : string )
 // (one annex-item) may flow through the effectful body.
 fun apply-file-change(
     base : annex-item, was-published : bool, new-file : maybe<mpart>,
-    want-public : bool, slug : string, now : iso-time, tags : list<string>
+    want-public : bool, slug : string, now : iso-time, tags : list<string>,
+    ts-opt : maybe<tenant-store>
   ) : <db,time,rng,log,config,store,crypto,div|e> bool
   match new-file
     Just(f) ->
-      // (Re)place the blob. The archive put is mandatory and verified, exactly
-      // as on upload: a file that can't be archived must not be recorded.
-      val media = if f.media-type == "" then "application/octet-stream" else f.media-type
-      val sha = b64-encode(sha256(f.body))
-      val byte-size = byte-count(f.body)
-      val archive-loc = Blob-loc(get-archive-remote(), slug)
-      blob-put(archive-loc, f.body)
-      if !blob-has(archive-loc) then
-        error("edit/archive-put-failed",
-          [("remote", get-archive-remote()), ("slug", slug)])
-        False
-      else
-        val archive-remote = Item-remote(
-          RkRclone, get-archive-remote() ++ "/" ++ slug, media,
-          "archive (encrypted)", False, 0)
-        val archived = with-new-blob(base, guess-kind(media), media, byte-size, sha, [archive-remote])
-        if want-public then
-          publish-and-ship(archived, slug, f.body, now, tags)
-        elif was-published && !revoke-public(slug) then
-          // Replacing a previously-published file with a private one, but the
-          // old public copy could NOT be verifiably deleted — fail the edit
-          // rather than claim "private" while the blob stays downloadable. The
-          // item is left untouched (still published), so the owner can retry.
+      // A new/replacement blob always needs the owner's storage.
+      match ts-opt
+        Nothing ->
+          error("edit/no-storage", [("slug", slug)])
           False
-        else
-          ship-edited-item(archived, tags)
-          True
+        Just(ts) -> apply-new-file(base, was-published, f, want-public, slug, now, tags, ts)
     Nothing ->
-      // No new bytes. Toggle publication on the existing file, if any.
+      // No new bytes. The storage-free cases first: a file-less review, or a
+      // toggle that doesn't change the public state — neither touches a blob.
       if !(base.byte-size > 0 || base.remotes.is-cons) then
         ship-edited-item(base, tags)
         True
       elif want-public == was-published then
         ship-edited-item(base, tags)
         True
-      elif want-public then
-        // archived → published: the bytes aren't in memory; read them back.
-        match blob-get(Blob-loc(get-archive-remote(), slug))
-          Nothing ->
-            error("edit/archive-get-failed",
-              [("remote", get-archive-remote()), ("slug", slug)])
-            False
-          Just(bytes) -> publish-and-ship(base, slug, bytes, now, tags)
-      elif revoke-public(slug) then
-        // published → archived: the public blob was VERIFIABLY deleted (revokes
-        // the download); now clear the minted URLs + drop the public mirror.
-        ship-edited-item(archive-only-item(base, now), tags)
-        True
-      else
-        // The public blob could not be verifiably deleted — do NOT mark the
-        // item private (that would claim revocation while the file stays
-        // downloadable). Fail the edit; the item stays published + consistent.
+      else match ts-opt
+        Nothing ->
+          error("edit/no-storage", [("slug", slug)])
+          False
+        Just(ts) -> apply-toggle(base, want-public, slug, now, tags, ts)
+
+// New/replacement blob: archive it (mandatory + verified), then publish or
+// keep archived — all against `ts` (the owner's backend).
+fun apply-new-file(
+    base : annex-item, was-published : bool, f : mpart, want-public : bool,
+    slug : string, now : iso-time, tags : list<string>, ts : tenant-store
+  ) : <db,time,rng,log,config,store,crypto,div|e> bool
+  val media = if f.media-type == "" then "application/octet-stream" else f.media-type
+  val sha = b64-encode(sha256(f.body))
+  val byte-size = byte-count(f.body)
+  val archive-loc = ts.archive-loc(slug)
+  blob-put(archive-loc, f.body)
+  if !blob-has(archive-loc) then
+    error("edit/archive-put-failed", [("remote", ts.archive), ("slug", slug)])
+    False
+  else
+    val archive-remote = Item-remote(
+      RkRclone, ts.archive ++ "/" ++ slug, media,
+      "archive (encrypted)", False, 0)
+    val archived = with-new-blob(base, guess-kind(media), media, byte-size, sha, [archive-remote])
+    if want-public then
+      publish-and-ship(archived, slug, f.body, now, tags, ts)
+    elif was-published && !revoke-public(slug, ts) then
+      // Replacing a previously-published file with a private one, but the
+      // old public copy could NOT be verifiably deleted — fail the edit
+      // rather than claim "private" while the blob stays downloadable. The
+      // item is left untouched (still published), so the owner can retry.
+      False
+    else
+      ship-edited-item(archived, tags)
+      True
+
+// No new bytes, but the public state flips. Both directions need `ts`.
+fun apply-toggle(
+    base : annex-item, want-public : bool, slug : string, now : iso-time,
+    tags : list<string>, ts : tenant-store
+  ) : <db,time,rng,log,config,store,div|e> bool
+  if want-public then
+    // archived → published: the bytes aren't in memory; read them back.
+    match blob-get(ts.archive-loc(slug))
+      Nothing ->
+        error("edit/archive-get-failed", [("remote", ts.archive), ("slug", slug)])
         False
+      Just(bytes) -> publish-and-ship(base, slug, bytes, now, tags, ts)
+  elif revoke-public(slug, ts) then
+    // published → archived: the public blob was VERIFIABLY deleted (revokes
+    // the download); now clear the minted URLs + drop the public mirror.
+    ship-edited-item(archive-only-item(base, now), tags)
+    True
+  else
+    // The public blob could not be verifiably deleted — do NOT mark the item
+    // private (that would claim revocation while the file stays downloadable).
+    // Fail the edit; the item stays published + consistent.
+    False
 
 // Delete the public blob and VERIFY it is actually gone, returning False if it
 // still resolves afterwards. Un-publishing's security promise is REVOCATION,
@@ -263,21 +306,21 @@ fun apply-file-change(
 // only remove a redundant copy, never the last one. This also fails safe if
 // the public remote were mis-configured equal to the archive remote. (Answer
 // to "do you ever delete a file with no private counterpart?" — no, refused.)
-fun revoke-public( slug : string ) : <log,config,store|e> bool
-  if get-public-remote() == get-archive-remote() then
+fun revoke-public( slug : string, ts : tenant-store ) : <log,store|e> bool
+  if ts.pubrem == ts.archive then
     error("edit/refuse-delete-remotes-equal",
-      [("remote", get-public-remote()), ("slug", slug)])
+      [("remote", ts.pubrem), ("slug", slug)])
     False
-  elif !blob-has(Blob-loc(get-archive-remote(), slug)) then
+  elif !blob-has(ts.archive-loc(slug)) then
     error("edit/refuse-delete-no-archive",
-      [("archive", get-archive-remote()), ("slug", slug)])
+      [("archive", ts.archive), ("slug", slug)])
     False
   else
-    val loc = Blob-loc(get-public-remote(), slug)
+    val loc = ts.pubrem-loc(slug)
     blob-del(loc)
     if blob-has(loc) then
       error("edit/public-delete-failed",
-        [("remote", get-public-remote()), ("slug", slug)])
+        [("remote", ts.pubrem), ("slug", slug)])
       False
     else
       True
@@ -309,23 +352,23 @@ fun ship-edited-item( it : annex-item, tags : list<string> )
 //  Bytes are a parameter so the upload-inline case uses f.body directly
 //  and the later action uses the bytes read back from the archive.
 // ----------------------------------------------------------------------
-pub fun publish-file-blob( it : annex-item, slug : string, bytes : string )
+pub fun publish-file-blob( it : annex-item, slug : string, bytes : string, ts : tenant-store )
   : <db,time,rng,log,config,store,div|e> bool
-  val public-loc = Blob-loc(get-public-remote(), slug)
+  val public-loc = ts.pubrem-loc(slug)
   blob-put(public-loc, bytes)
   if !blob-has(public-loc) then
     error("publish-file/public-put-failed",
-      [("remote", get-public-remote()), ("slug", slug)])
+      [("remote", ts.pubrem), ("slug", slug)])
     False
   else
     match blob-public-url(public-loc)
       Nothing ->
         error("publish-file/link-mint-failed",
-          [("remote", get-public-remote()), ("slug", slug)])
+          [("remote", ts.pubrem), ("slug", slug)])
         False
       Just(view) ->
         val now = now-iso()
-        val pub-target = get-public-remote() ++ "/" ++ slug
+        val pub-target = ts.pubrem ++ "/" ++ slug
         ship-published-item(build-published-item(it, pub-target, view, now))
         True
 
@@ -337,23 +380,23 @@ pub fun publish-file-blob( it : annex-item, slug : string, bytes : string )
 // effectful body — it is built purely and handed to the ()-returning ship.
 fun publish-and-ship(
     it : annex-item, slug : string, bytes : string, now : iso-time,
-    tags : list<string>
+    tags : list<string>, ts : tenant-store
   ) : <db,time,rng,log,config,store,div|e> bool
-  val public-loc = Blob-loc(get-public-remote(), slug)
+  val public-loc = ts.pubrem-loc(slug)
   blob-put(public-loc, bytes)
   if !blob-has(public-loc) then
     error("publish-file/public-put-failed",
-      [("remote", get-public-remote()), ("slug", slug)])
+      [("remote", ts.pubrem), ("slug", slug)])
     False
   else
     match blob-public-url(public-loc)
       Nothing ->
         error("publish-file/link-mint-failed",
-          [("remote", get-public-remote()), ("slug", slug)])
+          [("remote", ts.pubrem), ("slug", slug)])
         False
       Just(view) ->
         ship-edited-item(
-          build-published-item(it, get-public-remote() ++ "/" ++ slug, view, now),
+          build-published-item(it, ts.pubrem ++ "/" ++ slug, view, now),
           tags)
         True
 
@@ -510,27 +553,3 @@ fun text( v : sql-value ) : string
 
 fun int( v : sql-value ) : int
   match v { SqlInt(n) -> n; SqlText(s) -> s.parse-int.default(0); _ -> 0 }
-
-// ----------------------------------------------------------------------
-//  Auth
-// ----------------------------------------------------------------------
-
-// True iff the request's `Cookie: session=…` resolves to a valid session
-// whose actor is the local actor.
-pub fun is-owner-session( req : request ) : db bool
-  val tok = cookie-value(req.header("cookie").default(""), "session")
-  if tok == "" then False
-  else
-    val rows = query(
-      "SELECT 1 FROM session s JOIN actor a ON a.id = s.actor_id " ++
-      "WHERE s.token = ? AND a.local = 1 AND datetime(s.expires_at) > datetime('now')",
-      [txt(tok)]
-    )
-    match rows { Cons(_,_) -> True; _ -> False }
-
-fun cookie-value( header-val : string, name : string ) : string
-  header-val.split(";").map(fn(s) s.trim).flatmap(fn(p)
-    match p.starts-with(name ++ "=")
-      Just(slc) -> [slc.string]
-      Nothing   -> []
-  ).head.default("")

@@ -18,11 +18,12 @@ import ap/outbox
 import ap/actor_cache
 import ap/webfinger
 import web/server
-import web/handler/item   // for is-owner-session, cookie helpers
+import web/session   // is-tenant-session, session-actor
 
 pub fun handle-follow-action( req : request )
   : <db,time,rng,log,config,fetch,crypto,div|e> response
-  if !is-owner-session(req) then forbidden("login required")
+  val actor = session-actor(req)
+  if actor == "" then forbidden("login required")
   else
     val form = query-parse(req.body)
     val target = form-get(form, "target")
@@ -31,19 +32,20 @@ pub fun handle-follow-action( req : request )
     else
       // Make sure the target's row exists; we need their inbox to deliver to.
       val _ = resolve-actor(target-url, False)
-      emit-follow(target-url)
+      emit-follow(target-url, actor)
       see-other("/")
 
 pub fun handle-unfollow-action( req : request )
   : <db,time,rng,log,config,crypto,div|e> response
-  if !is-owner-session(req) then forbidden("login required")
+  val actor = session-actor(req)
+  if actor == "" then forbidden("login required")
   else
     val form = query-parse(req.body)
     val target = form-get(form, "target")
     val target-url = resolve-target(target)
     if target-url == "" then bad-request("could not resolve target actor")
     else
-      emit-undo-follow(target-url)
+      emit-undo-follow(target-url, actor)
       see-other("/")
 
 // Accept either a plain actor URL ("https://example.com/users/x") or an

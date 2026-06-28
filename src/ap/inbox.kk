@@ -74,27 +74,38 @@ fun handle-delete( a : ap-activity ) : <db,time,log|e> maybe<string>
 fun handle-follow( a : ap-activity ) : <db,time,rng,log,config,div|e> maybe<string>
   val now = now-iso()
   val target = a.object-id
-  val local-actor-id = local-actor-url()
-  if target != local-actor-id then
-    warn("inbox/follow: target is not us", [("target", target), ("us", local-actor-id)])
-    Just("Follow target does not match local actor")
-  else
-    exec(
-      "INSERT OR REPLACE INTO follow (id, follower_id, target_id, state, created_at) " ++
-      "VALUES (?,?,?,?,?)",
-      [txt(a.id), txt(a.actor), txt(target), txt("pending"), txt(now)]
-    )
-    if get-manually-approves() then
-      info("inbox/follow: queued for manual approval", [("actor", a.actor)])
-      Nothing
-    else
-      auto-accept-follow(a, now)
-      Nothing
+  // The Follow must target SOME local tenant. Look the target up among local
+  // actors; a hit also yields that tenant's own manually_approves policy
+  // (per-tenant, not a single global flag).
+  val rows = query(
+    "SELECT manually_approves FROM actor WHERE id = ? AND local = 1",
+    [txt(target)]
+  )
+  match rows
+    Nil ->
+      warn("inbox/follow: target is not a local actor", [("target", target)])
+      Just("Follow target does not match a local actor")
+    Cons(r, _) ->
+      val manual = match r.col(0) { SqlInt(n) -> n != 0; _ -> False }
+      exec(
+        "INSERT OR REPLACE INTO follow (id, follower_id, target_id, state, created_at) " ++
+        "VALUES (?,?,?,?,?)",
+        [txt(a.id), txt(a.actor), txt(target), txt("pending"), txt(now)]
+      )
+      if manual then
+        info("inbox/follow: queued for manual approval",
+          [("actor", a.actor), ("target", target)])
+        Nothing
+      else
+        auto-accept-follow(a, target, now)
+        Nothing
 
-fun auto-accept-follow( follow : ap-activity, now : iso-time )
+// `target` is the local tenant being followed; it is the actor that SENDS the
+// Accept (and whose key signs it, via sender_id = target).
+fun auto-accept-follow( follow : ap-activity, target : url, now : iso-time )
   : <db,time,rng,log,config,div|e> ()
   val accept-id = mint-id("activities")
-  val accept = accept-of(accept-id, local-actor-url(), follow, now)
+  val accept = accept-of(accept-id, target, follow, now)
   record-activity(ap-activity/to-json(accept), accept, False)
   exec(
     "UPDATE follow SET state = ?, accepted_at = ? WHERE id = ?",
@@ -104,7 +115,7 @@ fun auto-accept-follow( follow : ap-activity, now : iso-time )
   if inbox-url == "" then
     warn("inbox/follow: follower actor not cached", [("actor", follow.actor)])
   else
-    queue-delivery(accept-id, inbox-url)
+    queue-delivery(accept-id, inbox-url, target)
 
 fun handle-accept( a : ap-activity ) : <db,time,log|e> maybe<string>
   // The remote actor accepted a Follow we sent. Promote that pending row to

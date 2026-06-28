@@ -14,15 +14,28 @@ module effects/store
 // local-disk staging area".
 pub alias remote-handle = string
 
-// A blob location: (remote, key-within-remote). `remote` is the FULL
-// rclone remote+prefix as configured (e.g. "gdrive-crypt:annexwyrm", or a
-// plain absolute path like "/tmp/archive" which rclone treats as the local
-// backend) — it already carries its own ":" scheme separator if any. `key`
-// is the per-blob path segment (the item slug). The on-disk / on-remote
-// location is therefore `<remote>/<key>`.
+// A blob location: (remote, key-within-remote) plus the per-tenant backend
+// context. `remote` is the FULL rclone remote+prefix as configured (e.g.
+// "gdrive-crypt:annexwyrm", or a plain absolute path like "/tmp/archive"
+// which rclone treats as the local backend) — it already carries its own ":"
+// scheme separator if any. `key` is the per-blob path segment (the item slug).
+// The on-disk / on-remote location is therefore `<remote>/<key>`.
+//
+// `conf` is the path to the OWNING tenant's materialised rclone.conf, passed
+// to rclone as `--config <conf>`; "" means "use the daemon's ambient config"
+// (the bootstrap/admin tenant). `url-base` is that tenant's public-URL seam
+// for blob-public-url; "" means "ask `rclone link`". Both are all-string
+// fields so the struct stays koka#654-safe (no raw/ref mix).
 pub value struct blob-loc
-  remote : remote-handle
-  key    : string
+  remote   : remote-handle
+  key      : string
+  conf     : string
+  url-base : string
+
+// Ambient location: no per-tenant config (uses the daemon's ~/.config/rclone)
+// and no URL seam. The shape every call site used before multitenancy.
+pub fun blob-loc/ambient( remote : remote-handle, key : string ) : blob-loc
+  Blob-loc(remote, key, "", "")
 
 // The rclone path for this blob. We join with "/" (NOT ":") because the
 // remote already includes its scheme: "gdrive:bucket" + "/" + "slug" =
@@ -51,3 +64,11 @@ pub effect store
   // public bucket can hand out an https:// URL. Returns Nothing for
   // remotes that can't (private rclone, git-annex).
   fun blob-public-url( loc : blob-loc ) : maybe<string>
+
+  // Materialise tenant `owner`'s rclone config to a private (0600) file and
+  // return the path to pass as `rclone --config`. `conf` empty ⇒ returns ""
+  // (the daemon's ambient config is used). The secrets in `conf` reach the
+  // filesystem only — never argv or the process environment. Idempotent and
+  // safe under concurrent calls (atomic replace); the returned path is then
+  // carried in each blob-loc's `conf` field for that tenant's operations.
+  fun materialize-conf( owner : string, conf : string ) : string
