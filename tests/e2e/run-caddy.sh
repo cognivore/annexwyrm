@@ -309,6 +309,12 @@ assert_sql "SELECT count(*) FROM actor WHERE local=1;" "1" \
 assert_sql "SELECT count(*) FROM local_login;" "1" \
     "local_login count unchanged after re-init"
 
+# Seed the owner's storage (no auto-seed — admins are not special for storage).
+# Bare local-path targets work through --config regardless, so a comment config
+# satisfies the app's "config must be set" rule.
+seed_storage "$DB" "$BASE_URL/users/$USERNAME" $'# caddy e2e\n' \
+    "$ARCHIVE_REMOTE" "$PUBLIC_REMOTE" "$PUBLIC_URL_BASE"
+
 # ===========================================================================
 #  STEP 4 — start the daemon, then Caddy; confirm both live.
 # ===========================================================================

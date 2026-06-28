@@ -141,6 +141,24 @@ edit_item_anon() {
 }
 
 # Log in: POST /login with form-encoded credentials, save Set-Cookie
+# Seed a tenant's storage row directly. There is NO ambient fallback in the
+# app — every tenant (the admin included) must have a non-blank rclone config —
+# and the settings form rightly REJECTS local backends, so tests that use
+# local temp-dir remotes seed the row via SQL instead. For a bare local-path
+# target the config content is irrelevant (rclone treats a path with no ':' as
+# the local backend regardless of --config), so a comment line satisfies the
+# "config must be set" rule. Args: db actor_url conf archive public url_base
+seed_storage() {
+    local db="$1" actor="$2" conf="$3" archive="$4" public="$5" urlbase="$6"
+    # Double single-quotes for the SQL string literals.
+    conf=${conf//\'/\'\'}; archive=${archive//\'/\'\'}
+    public=${public//\'/\'\'}; urlbase=${urlbase//\'/\'\'}
+    sqlite3 "$db" "INSERT OR REPLACE INTO tenant_storage \
+(actor_id, rclone_conf, archive_remote, public_remote, public_url_base, updated_at) \
+VALUES ('$actor', '$conf', '$archive', '$public', '$urlbase', '2026-06-28T00:00:00Z');"
+}
+
+# Log in as USER with PASS over the unix socket SOCK, storing the session cookie
 # into a jar file. Subsequent requests use that jar.
 login() {
     local sock="$1" jar="$2" user="$3" pass="$4"

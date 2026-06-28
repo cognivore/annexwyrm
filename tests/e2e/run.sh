@@ -49,11 +49,17 @@ if [ "$USE_GDRIVE" = "1" ]; then
     ARCHIVE_REMOTE="gdrive-crypt:annexwyrm-test"
     PUBLIC_REMOTE="gdrive:annexwyrm-public-test"
     PUBLIC_URL_BASE=""
+    # gdrive remotes are NAMED, so the seeded config must define them — use the
+    # host's real rclone config (this gated path needs real creds anyway).
+    STORAGE_CONF="$(cat "$HOME/.config/rclone/rclone.conf" 2>/dev/null || true)"
 else
     ARCHIVE_REMOTE="$TMP/archive"
     PUBLIC_REMOTE="$TMP/public"
     PUBLIC_URL_BASE="http://example.test/dl"
     mkdir -p "$ARCHIVE_REMOTE" "$PUBLIC_REMOTE"
+    # Bare local-path targets work through --config regardless; a non-blank
+    # comment satisfies the app's "config must be set" rule (no ambient).
+    STORAGE_CONF=$'# annexwyrm e2e — bare local-path targets, no named remote needed\n'
 fi
 
 note "tmp dir:        $TMP"
@@ -137,6 +143,11 @@ if [ "$login_row" != "1" ]; then
     red "init did not install a login row — $DATA/annexwyrm.db is misconfigured"
     exit 1
 fi
+
+# The admin gets no auto-seeded storage (no special treatment); configure it
+# like any tenant would — here via SQL since the form rejects local backends.
+seed_storage "$DATA/annexwyrm.db" "http://localhost/users/alice" \
+    "$STORAGE_CONF" "$ARCHIVE_REMOTE" "$PUBLIC_REMOTE" "$PUBLIC_URL_BASE"
 
 note "starting daemon"
 ANNEXWYRM_DOMAIN="localhost" \
@@ -526,6 +537,10 @@ ANNEXWYRM_DOMAIN="localhost" ANNEXWYRM_BASE_URL="http://localhost" \
 ANNEXWYRM_USERNAME="alice" ANNEXWYRM_INSTANCE_NAME="fail" \
 ANNEXWYRM_PASSWORD="$TEST_PASS" ANNEXWYRM_DATA="$FAIL_DATA" \
     "$BINARY" init "$FAIL_DATA" >/dev/null 2>&1
+# Seed alice's storage pointed at the BAD archive (a file, not a dir) so the
+# upload's mandatory archive-put fails — the contract under test.
+seed_storage "$FAIL_DATA/annexwyrm.db" "http://localhost/users/alice" \
+    "$STORAGE_CONF" "$BAD_ARCHIVE" "$FAIL_PUB" "http://example.test/dl"
 
 ANNEXWYRM_DOMAIN="localhost" ANNEXWYRM_BASE_URL="http://localhost" \
 ANNEXWYRM_USERNAME="alice" ANNEXWYRM_INSTANCE_NAME="fail" \
@@ -602,6 +617,9 @@ case "$MIG_COLS" in
     *file_published*) green "  ✓ migrated DB has file_published" ;;
     *) red "migrated DB missing file_published: $MIG_COLS"; exit 1 ;;
 esac
+# Migration created tenant_storage too; seed alice's storage for the upload.
+seed_storage "$MIG_DATA/annexwyrm.db" "http://localhost/users/alice" \
+    "$STORAGE_CONF" "$ARCHIVE_REMOTE" "$PUBLIC_REMOTE" "$PUBLIC_URL_BASE"
 ANNEXWYRM_DOMAIN="localhost" ANNEXWYRM_BASE_URL="http://localhost" \
 ANNEXWYRM_USERNAME="alice" ANNEXWYRM_INSTANCE_NAME="mig e2e" \
 ANNEXWYRM_SOCKET="$MIG_SOCK" ANNEXWYRM_DATA="$MIG_DATA" \
@@ -1476,10 +1494,11 @@ green "  ✓ bob (non-admin) cannot reach /invites"
 stor() { curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" --cookie "$BOB_JAR" \
            --data-urlencode "rclone_conf=$1" --data-urlencode "archive_remote=$2" \
            --data-urlencode "public_remote=$3" --data-urlencode "public_url_base=$4" "http://x/settings/storage"; }
-[ "$(stor '' "$TMP/x" "cloud:b" '')"            = "400" ] || { red "local-path archive must be rejected"; exit 1; }
-[ "$(stor 'type = local' "a:x" "b:y" '')"       = "400" ] || { red "type=local config must be rejected"; exit 1; }
-[ "$(stor '' "phantom:a" "phantom:b" '')"       = "200" ] || { red "named-remote targets must be accepted"; exit 1; }
-green "  ✓ storage POST rejects local backends, accepts named-remote targets"
+[ "$(stor 'x' "$TMP/x" "cloud:b" '')"            = "400" ] || { red "local-path archive must be rejected"; exit 1; }
+[ "$(stor 'type = local' "a:x" "b:y" '')"        = "400" ] || { red "type=local config must be rejected"; exit 1; }
+[ "$(stor '' "a:x" "b:y" '')"                    = "400" ] || { red "blank config must be rejected (no ambient fallback)"; exit 1; }
+[ "$(stor '[phantom] type = drive' "phantom:a" "phantom:b" '')" = "200" ] || { red "valid config + named targets must be accepted"; exit 1; }
+green "  ✓ storage POST requires a config, rejects local backends, accepts cloud remotes"
 
 # (g) Seed bob's REAL storage directly with a non-empty rclone.conf defining a
 #     NAMED remote. The settings UI forbids local backends, but the test env IS

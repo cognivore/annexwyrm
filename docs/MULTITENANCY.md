@@ -88,12 +88,19 @@ all-reference, koka#654-safe). `Blob-loc(...)` is built only through the
 `tenant-store` helpers; nothing constructs blob locations from global config
 anymore.
 
-**The admin tenant** keeps `rclone_conf=''` (ambient `~/.config/rclone`) and
-gets its `archive_remote`/`public_remote`/`public_url_base` from the
-`ANNEXWYRM_*_REMOTE` env vars, re-seeded on every `init` **and** `serve` start
-(`bootstrap-admin`). That is why prod (and the e2e, which sets the remote env
-on `serve`) keep working unchanged: the admin storage is env-managed; new
-tenants are DB-managed via `/settings` and never touched by the seed.
+**No ambient fallback, no admin exception.** A blank `rclone_conf` means
+"not configured" for *everyone* — `load-tenant-store` returns `Nothing`, and
+uploads are refused — including for the owner. There is no path by which a
+tenant rides the host's own `~/.config/rclone` or the operator's cloud. The
+ONLY thing `is_admin` grants is minting invites (`bootstrap-admin` just sets
+the flag; it never touches storage). The owner configures their rclone in
+`/settings` exactly like every invited tenant.
+
+**Storage self-test.** Saving storage runs a real rclone round-trip (write a
+probe → read it back byte-exact → delete it) through the tenant's config and
+reports the verdict inline — so a tenant learns their secrets are set *and*
+functional before they upload. Re-runnable via `POST /settings/storage/test`.
+The setup guide lives at `/help/storage` (linked from the `[?]` on settings).
 
 ---
 

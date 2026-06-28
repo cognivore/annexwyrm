@@ -78,11 +78,14 @@ fun storage-form( conf : string, archive : string, pubrem : string, url-base : s
   ([
     "<form action=\"/settings/storage\" method=\"post\">",
     "  <fieldset>",
-    "    <legend>storage backend (your rclone)</legend>",
-    "    <p class=\"hint\">your files are stored on YOUR cloud via rclone. paste your",
-    "      <code>rclone.conf</code> below and name the remotes. these are private to you;",
-    "      other tenants can view your files (the daemon decrypts through this config) but",
-    "      never see the config itself. leave the config blank to use the server's ambient rclone.</p>",
+    "    <legend>storage backend (your rclone) " ++
+      "<a class=\"help\" href=\"/help/storage\" target=\"_blank\" rel=\"noopener\">[?]</a></legend>",
+    "    <p class=\"hint\">your files live on <strong>your own cloud</strong> (Google Drive, S3, …) via rclone — " ++
+      "this server never stores them. paste your <code>rclone.conf</code> and name your remotes. " ++
+      "<strong>your secrets (cloud token, encryption password) live inside that config</strong>; it is kept " ++
+      "private (mode 0600) on the server and never shown to anyone else. other members can download your " ++
+      "files (the server decrypts on the fly) but never see your config. " ++
+      "new to this? read the <a href=\"/help/storage\" target=\"_blank\" rel=\"noopener\">storage setup guide</a>.</p>",
     "    <label>rclone.conf:",
     "      <textarea name=\"rclone_conf\" rows=\"10\" spellcheck=\"false\" " ++
       "placeholder=\"paste your rclone.conf — [archive-crypt], [public], ...\">" ++

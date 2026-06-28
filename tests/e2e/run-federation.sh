@@ -376,6 +376,13 @@ init_instance "$B_DOMAIN" "$B_BASE" "$B_USER" "$B_INSTANCE" "$B_PASS" "$B_DATA"
 [ -f "$A_DB" ] || { red "init did not create $A_DB"; exit 1; }
 [ -f "$B_DB" ] || { red "init did not create $B_DB"; exit 1; }
 
+# Seed each owner's storage (no auto-seed — admins get no storage special
+# treatment). Bare local-path targets work through --config, so a comment
+# config satisfies the "config must be set" rule. Dirs match start_daemon's.
+mkdir -p "$TMP/A/archive" "$TMP/A/public" "$TMP/B/archive" "$TMP/B/public"
+seed_storage "$A_DB" "$A_ACTOR" $'# fed e2e\n' "$TMP/A/archive" "$TMP/A/public" "http://example.test/dl"
+seed_storage "$B_DB" "$B_ACTOR" $'# fed e2e\n' "$TMP/B/archive" "$TMP/B/public" "http://example.test/dl"
+
 assert_sql_a "SELECT count(*) FROM actor WHERE local=1;" "1" "exactly one local actor"
 assert_sql_b "SELECT count(*) FROM actor WHERE local=1;" "1" "exactly one local actor"
 assert_sql_a "SELECT id FROM actor WHERE local=1;" "$A_ACTOR" \

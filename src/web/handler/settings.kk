@@ -62,6 +62,13 @@ pub fun handle-settings-storage-post( req : request ) : <db,time,config,store,di
     val urlbase = field-of(form, "public_url_base").trim
     if archive == "" || pubrem == "" then
       bad-request("archive and public remotes are both required")
+    elif conf == "" then
+      // Everyone — owner included — brings their own rclone. There is no
+      // ambient fallback: this server never stores anyone's files on its own
+      // backend/credentials.
+      bad-request("paste your own rclone.conf — your files are stored on YOUR " ++
+                  "cloud, not this server. see the storage guide ([?] on the " ++
+                  "settings page) to set one up.")
     elif has-ctl(archive) || has-ctl(pubrem) || has-ctl(urlbase) then
       // The remote targets are single rclone arguments; a newline/CR could
       // smuggle a second token into the argv we hand rclone.

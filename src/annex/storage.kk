@@ -42,6 +42,12 @@ pub value struct storage-fields
 // archive remote, materialise its rclone.conf to a private file. Nothing when
 // the tenant has not configured storage yet (uploads are then refused with a
 // clear message; a read of an unconfigured tenant's blob simply 404s).
+//
+// CRITICAL ISOLATION: there is NO ambient fallback for anyone — admin or not.
+// Every tenant (the owner included) must bring their OWN rclone config, so
+// their bytes only ever touch THEIR cloud. A blank config (or no archive
+// remote) means "not configured yet" → Nothing → uploads are refused. This
+// server never stores anyone's files on its own backend or credentials.
 pub fun load-tenant-store( owner : url ) : <db,store|e> maybe<tenant-store>
   val rows = query(
     "SELECT rclone_conf, archive_remote, public_remote, public_url_base " ++
@@ -55,7 +61,7 @@ pub fun load-tenant-store( owner : url ) : <db,store|e> maybe<tenant-store>
       val archive = text(r.col(1))
       val pubrem  = text(r.col(2))
       val urlbase = text(r.col(3))
-      if archive == "" then Nothing
+      if archive == "" || conf == "" then Nothing
       else Just(Tenant-store(archive, pubrem, urlbase, materialize-conf(owner, conf)))
 
 // The blob-loc for `key` in this tenant's encrypted archive remote.

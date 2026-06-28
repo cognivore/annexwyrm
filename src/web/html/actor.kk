@@ -1,23 +1,24 @@
 // annexwyrm/web/html/actor — actor profile page.
 //
-// Re-uses the layout. Embeds the actor JSON-LD in the <head>.
+// The actor metadata (id/inbox/outbox/followers, embedded JSON-LD) plus that
+// user's FULL archive, paginated and rendered with the same rich rows as the
+// home feed (reusing web/html/home). The per-row "by <user>" attribution is
+// suppressed here — it's redundant on a single user's page.
 
 module web/html/actor
 
 import core/json
 import ap/actor
 import web/html/layout
+import web/html/home   // home-row, render-item-list, pagination
 
-pub value struct recent-row
-  id        : string
-  name      : string
-  kind      : string
-  published : string
-
-pub fun render-actor-page( a : ap-actor, recents : list<recent-row>,
+pub fun render-actor-page( a : ap-actor, rows : list<home-row>,
+                           page : int, total : int, size : int,
                            max-width : string = "1080px" ) : div string
   val title = if a.name == "" then a.preferred-username else a.name
   val jsonld = json/show(ap-actor/to-json(a))
+  val base = "/users/" ++ a.preferred-username ++ "?page="
+  val plural = if total == 1 then "" else "s"
   val body = ([
     "<section class=\"actor\">",
     "  <h1>" ++ esc(title) ++
@@ -31,32 +32,12 @@ pub fun render-actor-page( a : ap-actor, recents : list<recent-row>,
     "  </dl>",
     "</section>",
     "<section>",
-    "  <h2>recent</h2>",
-    recents-block(recents),
+    "  <h2>archive <small class=\"count\">" ++ total.show ++ " item" ++ plural ++ "</small></h2>",
+    render-item-list(rows),
+    pagination(base, page, total, size),
     "</section>",
     "<section class=\"actions\">",
-    "  <form action=\"/follow\" method=\"post\">",
-    "    <label>follow this user from another instance: copy the URL above.</label>",
-    "  </form>",
+    "  <p class=\"hint\">follow this user from another instance: copy the URL above.</p>",
     "</section>"
   ]).join("\n")
   layout(title, jsonld, "<a href=\"/users/" ++ esc(a.preferred-username) ++ "\">" ++ esc(a.preferred-username) ++ "</a>", body, max-width)
-
-fun recents-block( rs : list<recent-row> ) : string
-  match rs
-    Nil -> "<p class=\"empty\">nothing public.</p>"
-    _   ->
-      "<ol class=\"items\">\n" ++
-      rs.map(recent-row-html).join("\n") ++
-      "\n</ol>"
-
-fun recent-row-html( r : recent-row ) : string
-  val path = "/items/" ++ id-tail(r.id)
-  "<li class=\"item-row\">" ++
-    "<span class=\"kind\">[" ++ esc(r.kind.to-lower) ++ "]</span> " ++
-    "<a href=\"" ++ esc(path) ++ "\">" ++ esc(if r.name == "" then "(untitled)" else r.name) ++ "</a>" ++
-    " <span class=\"meta\">" ++ esc(r.published) ++ "</span>" ++
-  "</li>"
-
-fun id-tail( id : string ) : string
-  id.split("/").reverse.head.default(id)

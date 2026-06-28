@@ -32,6 +32,7 @@ import web/handler/follow
 import web/handler/search
 import web/handler/register
 import web/handler/invites
+import web/handler/help
 
 // Split "/users/alice/inbox" → ["users", "alice", "inbox"].
 fun segments( path : string ) : list<string>
@@ -90,6 +91,9 @@ pub fun dispatch( req : request )
       handle-item-edit-post(req, id)
     ("POST",   Cons("items", Cons(id, Cons("publish-file", Nil)))) ->
       handle-item-publish-file(req, id)
+
+    // Help / docs ---------------------------------------------------------
+    ("GET",    Cons("help", Cons("storage", Nil))) -> handle-help-storage(req)
 
     // Search & tags -------------------------------------------------------
     ("GET",    Cons("search", Nil)) -> handle-search(req)
