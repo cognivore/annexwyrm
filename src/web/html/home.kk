@@ -29,7 +29,7 @@ pub fun render-home( rows : list<home-row>, instance-name : string,
                      max-width : string = "1080px" ) : string
   val body = ([
     "<h1>" ++ esc(instance-name) ++ "</h1>",
-    "<p class=\"subtitle\">a federated archive — pieces dropped here are mirrored, optionally shared.</p>",
+    "<p class=\"subtitle\">a public, shared archive — reviews from everyone here, newest first.</p>",
     search-box(""),
     items-list(rows),
     pagination("/?page=", page, total, size)
