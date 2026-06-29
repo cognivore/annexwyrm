@@ -32,6 +32,21 @@ PROD="/opt/annexwyrm/"
 echo "Syncing source -> $HOST:$PROD"
 rsync -az --delete --filter="merge .rsync-filter" ./ "$HOST:$PROD"
 
+# Apply the kk_bytes_join_with refcount-leak fix to the box's koka kklib.
+# annexwyrm builds every HTML page (and JSON) with `.join(...)`, which lowers
+# to kk_bytes_join_with — the stock kklib dup'd and leaked every joined string,
+# so the long-running daemon grew unbounded per request. The fix is a runtime
+# kklib patch (cognivore/koka bb9e2fba), independent of the koka compiler
+# version; the nix build uses the fully-patched koka 3.2.7, but the box has a
+# 3.2.3 BINARY install with no Haskell toolchain to rebuild from source, so we
+# patch its kklib in place. Idempotent (skips if already applied); koka
+# recompiles kklib from this source on every `rm -rf build/.koka` rebuild below.
+echo "Ensuring kklib join-leak fix is applied on the server..."
+ssh "$HOST" 'KK=$(ls -d /usr/local/share/koka/v*/kklib 2>/dev/null | head -1)
+  if [ -z "$KK" ]; then echo "WARN: koka kklib dir not found; skipping join-leak patch"; \
+  elif grep -q kk_vector_buf_borrow "$KK/src/bytes.c"; then echo "  kklib join-leak fix already present"; \
+  else patch -p1 -d "$KK" < /opt/annexwyrm/nix/kklib-join-leak.patch && echo "  kklib join-leak fix applied"; fi'
+
 echo "Building on the server (koka native)..."
 # Build to a temp name and atomically rename over the live binary: the
 # running daemon holds build/annexwyrm open, so koka's plain copy onto it
