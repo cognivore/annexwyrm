@@ -1,5 +1,34 @@
 # Notes — annexwyrm build state, idiomatic workarounds, SQL typing
 
+## Koka toolchain (patched fork + string-join leak fix, 2026-06-29)
+
+Two build paths, both leak-free, but on different koka versions:
+
+- **nix (`nix build .#default`, CI, dev)** builds koka from the
+  **cognivore/koka `dev` fork** via `nix/koka-patched.nix` (rev pinned;
+  version derived from the fork's `package.yaml` → currently **3.2.7**). That
+  fork carries the evv-crossdepth SIGSEGV fix, ParcReuse/yield-context fixes,
+  the #894 codegen backport, and — critically — the **`kk_bytes_join_with`
+  refcount-leak fix** (`bb9e2fba`). The flake wires it in as `kokaPatched`. It
+  also resolves the `extern import c file "../../csrc/*.c"` reads that stock
+  koka chokes on in a from-source nix build (needs `LC_ALL=C.UTF-8` too — the
+  bridges have em-dashes; see `nix/package.nix`).
+- **prod (`./deploy.sh`, native on chat.md110.se)** uses the box's **3.2.3
+  BINARY** koka (no Haskell toolchain to build the fork). deploy.sh applies the
+  **bytes.c join-leak patch in place** (`nix/kklib-join-leak.patch`,
+  idempotent) before the native build; koka recompiles kklib from that source
+  every rebuild. Same leak outcome; prod just lacks the other compiler fixes.
+
+**The leak:** `kk_bytes_join_with` read elements with `kk_vector_at_borrow`,
+which dup's each into an owned box the loop never dropped → every joined string
+leaked. annexwyrm builds **every HTML page (and JSON)** with `.join(...)`, so
+the daemon grew unbounded per request. Fix reads the borrowed buffer
+(`kk_vector_buf_borrow` → `vbuf[i]`); `kk_vector_drop(v)` at `end:` frees them.
+
+To bump the toolchain: change only `rev` in `nix/koka-patched.nix`. If the
+patched koka's bytes.c diverges from prod's 3.2.3, regenerate
+`nix/kklib-join-leak.patch` (the function was identical 3.2.3↔3.2.7).
+
 ## Build state (Koka 3.2.3 in the dev shell)
 
 `just build` produces a working binary; `just test-e2e` runs against it
