@@ -23,10 +23,20 @@ stdenv.mkDerivation {
     export HOME=$TMPDIR
     mkdir -p build
 
+    # A UTF-8 locale is REQUIRED. koka reads each `extern import c file
+    # "../../csrc/X.c"` via Haskell readFile, which decodes with the locale
+    # encoding; our C bridges contain UTF-8 (em-dashes in comments), so under a
+    # nix build's default C/POSIX locale readFile throws and koka reports
+    # "unable to read external file" for every bridge. (darwin only ever
+    # substitutes annexwyrm from cachix; deploy.sh works because Ubuntu has a
+    # UTF-8 locale.) C.UTF-8 is built into glibc, so no locale archive needed.
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+
     koka -O2 \
       --target=c \
       --include=src \
-      --ccincdir=csrc \
+      --ccincdir="$(pwd)/csrc" \
       --builddir=build/.koka \
       --cclib="sqlite3;ssl;crypto;curl;argon2" \
       -o build/annexwyrm \

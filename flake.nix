@@ -26,6 +26,15 @@
           (throw "kklib not found in koka.buildInputs — nixpkgs layout changed")
           pkgs.koka.buildInputs;
 
+        # Patched koka (cognivore/koka `dev`) — the OneHR-reconciled fork with
+        # the evv-crossdepth SIGSEGV fix, ParcReuse/yield-context fixes, and the
+        # kk_bytes_join_with refcount-leak fix. Stock nixpkgs koka 3.2.3 ALSO
+        # cannot read our `extern import c file "../../csrc/*.c"` bridges in a
+        # from-source nix build ("unable to read external file"); the patched
+        # koka resolves them (OneHR's koka uses the identical `c file ".."`
+        # pattern and builds with it). See nix/koka-patched.nix.
+        kokaPatched = pkgs.callPackage ./nix/koka-patched.nix { };
+
         # Runtime libraries the C bridge links against.
         runtimeLibs = with pkgs; [
           sqlite
@@ -37,6 +46,7 @@
       {
         packages.default = pkgs.callPackage ./nix/package.nix {
           inherit kklib runtimeLibs;
+          koka = kokaPatched;
         };
 
         devShells.default = pkgs.mkShell {
