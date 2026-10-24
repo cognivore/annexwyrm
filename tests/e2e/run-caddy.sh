@@ -588,6 +588,9 @@ UPLOAD_FORM_HEADERS="$(dump_headers_tcp "/upload" "$JAR")"
 assert_via_caddy "$UPLOAD_FORM_HEADERS" "upload form"
 UPLOAD_FORM_HTML="$(fetch_html_tcp "/upload" "$JAR")"
 # The form renders for the owner (a header/upload chrome marker present).
+assert_grep "$UPLOAD_FORM_HTML" '<script src="/static/upload.js" defer></script>' \
+  "upload form loads the progress script"
+assert_status_tcp "/static/upload.js" 200 "GET /static/upload.js → 200 (served beside style.css)"
 assert_grep "$UPLOAD_FORM_HTML" '<form action="/upload" method="post" enctype="multipart/form-data">' \
     "upload form element"
 # THE assertion: no per-item privacy <select> anywhere on the form. (The

@@ -5,7 +5,9 @@
 // file blob (publish_file, default OFF) — unchecked, the file goes only to
 // the encrypted archive and no download link is published; checked, it is
 // also copied to the public remote and a download link is minted and
-// federated. No JavaScript, no per-item privacy, no manual mirror rows.
+// federated. No JavaScript needed (static/upload.js only adds an upload
+// progress line on top of the plain POST), no per-item privacy, no manual
+// mirror rows.
 //
 // Layout: one field per row, every control full-width (style.css makes
 // label a block and its input span the row), so the form reads top-to-

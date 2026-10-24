@@ -36,6 +36,7 @@ pub fun layout(
     "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
     "  <title>" ++ esc(title) ++ "</title>",
     "  <link rel=\"stylesheet\" href=\"/static/style.css\">",
+    "  <script src=\"/static/upload.js\" defer></script>",
     "  <style>body{max-width:" ++ esc(max-width) ++ "}</style>",
     embed-jsonld(jsonld),
     "</head>",

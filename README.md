@@ -29,7 +29,8 @@ Each tenant is a first-class fediverse actor signing with its own key.
 The full design, authorization rules, storage flow, and security/trust
 boundaries are in [`docs/MULTITENANCY.md`](docs/MULTITENANCY.md).
 
-There is **no JavaScript**. Pages are rendered server-side; forms POST
+There is **no JavaScript** to speak of: the one script, `static/upload.js`,
+adds an upload progress line to the two multipart forms, which work without it. Pages are rendered server-side; forms POST
 `multipart/form-data`; navigation is page refreshes. The aesthetic is
 Reddit v1 / `lainchan` — dense text on cream, almost no chrome.
 
