@@ -20,6 +20,7 @@ import effects/crypto
 import ap/actor          // build-local-actor
 import web/prefs
 import web/server
+import web/session
 import web/html/register
 
 // GET /register?invite=<token>
@@ -91,15 +92,13 @@ fun create-tenant( req : request, token : string, username : string,
 fun open-session( req : request, actor-id : url, now : iso-time )
   : <db,time,rng,log,config,div|e> response
   val tok = rand-hex(32)
-  val expiry = iso-from-unix(now-unix() + 60 * 60 * 24 * 14)  // 14d
+  val expiry = session-expiry()          // lifetime + cookie: web/session
   val _ = exec("DELETE FROM session WHERE actor_id = ?", [txt(actor-id)])
   val _ = exec(
     "INSERT INTO session (token, actor_id, created_at, expires_at) VALUES (?,?,?,?)",
     [txt(tok), txt(actor-id), txt(now), txt(expiry)]
   )
-  see-other("/settings").with-header("Set-Cookie",
-    "session=" ++ tok ++ "; Path=/; HttpOnly; SameSite=Strict; Max-Age=1209600"
-    ++ secure-attr(req))
+  see-other("/settings").with-header("Set-Cookie", session-cookie(req, tok))
 
 // ----------------------------------------------------------------------
 //  Validation helpers
@@ -147,8 +146,3 @@ fun field-of( fs : list<(string,string)>, k : string ) : string
   match fs
     Nil -> ""
     Cons((k0,v), rest) -> if k0 == k then v else field-of(rest, k)
-
-// "; Secure" iff the request arrived over HTTPS (mirrors login's gate so the
-// http:// dev path keeps working).
-fun secure-attr( req : request ) : string
-  if req.header("x-forwarded-proto").default("") == "https" then "; Secure" else ""

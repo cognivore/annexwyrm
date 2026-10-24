@@ -182,7 +182,8 @@ Three separate requests; assert all.
   - Status MUST be `303` (`see-other("/")` → 303 See Other).
   - `Location` header MUST be `/` (parsed case-insensitively — Caddy capitalizes it).
   - A `Set-Cookie` header MUST be present and MUST start with `session=` followed by a non-empty token.
-  - The `Set-Cookie` value MUST contain `HttpOnly`, `Path=/`, `SameSite=Lax`, `Max-Age=1209600`.
+  - The `Set-Cookie` value MUST contain `HttpOnly`, `Path=/`, `SameSite=Strict`, `Max-Age=63072000` (two years; the `session` row's `expires_at` MUST agree, i.e. be more than 729 days out).
+  - Renewal (Step 6b): a plain authenticated GET on a fresh session sets NO cookie; after the row is aged by hand to +10 days, the next GET re-plants the SAME token with `Max-Age=63072000` (no `Secure` over http://) and the row is pushed back out beyond 729 days; an unknown token is never re-planted.
   - **The `Set-Cookie` value MUST NOT contain `Secure`** — assert `! grep -i 'secure'` on the cookie line. This is the bug-#6 assertion. A `Secure` cookie over `http://` is silently dropped by browsers, breaking login while every server-side check looks fine.
 - **(b)** Daemon log: login succeeded (no `invalid credentials` rendered). Indirectly verified by the 303 + cookie (the handler only emits 303/Set-Cookie on a successful argon2 verify; the failure path returns 200 with the re-rendered form). Assert the response was 303, not 200 — a 200 here means auth failed.
 - **(c)** A new row in `session`: `SELECT count(*) FROM session;` MUST be `1`, and the token MUST match the cookie value:
@@ -331,7 +332,7 @@ If any of those four sabotages does **not** turn the suite red, the test does no
 | CSS content-type | `text/css` |
 | HTML content-type | `text/html; charset=utf-8` |
 | Caddy proxy proof | `Via: 1.1 Caddy` (match `grep -i '^via:.*caddy'`) |
-| Login success | `303` + `Location: /` + `Set-Cookie: session=<tok>; Path=/; HttpOnly; SameSite=Lax; Max-Age=1209600` |
+| Login success | `303` + `Location: /` + `Set-Cookie: session=<tok>; Path=/; HttpOnly; SameSite=Strict; Max-Age=63072000` |
 | Login cookie forbidden attr | `Secure` MUST be absent |
 | Login failure | `200` + `invalid credentials` (+ `class="err"`) |
 | Upload redirect | `Location: /items/<hex>` (`^/items/[0-9a-f]+$`) |

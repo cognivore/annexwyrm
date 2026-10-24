@@ -17,6 +17,7 @@ import effects/fetch
 import effects/deliver
 import effects/store
 import web/server
+import web/session
 import web/handler/home
 import web/handler/actor
 import web/handler/inbox
@@ -44,8 +45,14 @@ fun decode-segs( segs : list<string> ) : div list<string>
   segs.map(url-decode)
 
 // The entry point. The set of effects this needs is the union of every
-// handler — i.e. the full algorithm stack.
+// handler — i.e. the full algorithm stack. Every response passes through
+// web/session's `refresh-session` on the way out, so a logged-in browser's
+// session is renewed on use without any handler knowing about it.
 pub fun dispatch( req : request )
+  : <db,time,rng,log,config,crypto,fetch,deliver,store,div|e> response
+  refresh-session(req, route-request(req))
+
+fun route-request( req : request )
   : <db,time,rng,log,config,crypto,fetch,deliver,store,div|e> response
   val segs = decode-segs(segments(req.path))
   match (req.method, segs)

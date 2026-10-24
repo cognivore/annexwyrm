@@ -480,7 +480,7 @@ green "  ✓ Set-Cookie sets a session token"
 assert_grep "$SET_COOKIE" 'HttpOnly' "cookie HttpOnly"
 assert_grep "$SET_COOKIE" 'Path=/' "cookie Path=/"
 assert_grep "$SET_COOKIE" 'SameSite=Strict' "cookie SameSite=Strict (CSRF hardening)"
-assert_grep "$SET_COOKIE" 'Max-Age=1209600' "cookie Max-Age=1209600"
+assert_grep "$SET_COOKIE" 'Max-Age=63072000' "cookie Max-Age=63072000 (two years)"
 # THE bug-#6 assertion: NO Secure attribute over http://.
 if printf '%s' "$SET_COOKIE" | grep -qi 'secure'; then
     red "Set-Cookie carries 'Secure' over http:// (bug #6): $SET_COOKIE"
@@ -497,6 +497,53 @@ assert_sql "SELECT count(*) FROM session WHERE token = '$TOK';" "1" \
 assert_sql \
     "SELECT count(*) FROM session s JOIN actor a ON a.id = s.actor_id WHERE a.username='sweater';" \
     "1" "session belongs to actor 'sweater' (identity coherence)"
+# The row's expiry is the authority and must agree with the cookie: ~2 years out.
+assert_sql \
+    "SELECT count(*) FROM session WHERE token = '$TOK' AND datetime(expires_at) > datetime('now', '+729 days');" \
+    "1" "session row expires ~2 years out (matches Max-Age)"
+
+# ===========================================================================
+#  STEP 6b — the session renews itself on use (sliding two-year lifetime).
+#  Browsers cap one Set-Cookie at 400 days, so two years are only reachable
+#  by renewal. Contract (web/session `refresh-session`): a plain GET with a
+#  fresh session sets NO cookie (renewal is at most daily, never per page);
+#  once the row has drifted more than a day below now+2y — aged by hand here
+#  — the next authenticated GET re-plants the SAME token with the full
+#  Max-Age and pushes the row's expires_at back out to ~2 years.
+# ===========================================================================
+note "STEP 6b — session renewal on use"
+FRESH_HEADERS_FILE="$TMP/fresh.headers"
+caddy_curl --output /dev/null --dump-header "$FRESH_HEADERS_FILE" \
+    --cookie "$JAR" "${CADDY_BASE}/"
+if grep -qi '^set-cookie:' "$FRESH_HEADERS_FILE"; then
+    red "fresh session was re-set on a plain GET (renewal must be at most daily)"
+    cat "$FRESH_HEADERS_FILE" >&2; exit 1
+fi
+green "  ✓ fresh session: plain GET sets no cookie"
+sqlite3 "$DB" "UPDATE session SET expires_at = datetime('now', '+10 days') WHERE token = '$TOK';"
+STALE_HEADERS_FILE="$TMP/stale.headers"
+caddy_curl --output /dev/null --dump-header "$STALE_HEADERS_FILE" \
+    --cookie "$JAR" "${CADDY_BASE}/"
+REFRESH_COOKIE="$(grep -i '^set-cookie:' "$STALE_HEADERS_FILE" | head -1 | tr -d '\r')"
+[ -n "$REFRESH_COOKIE" ] || { red "aged session was not renewed (no Set-Cookie on GET)"; exit 1; }
+assert_grep "$REFRESH_COOKIE" "session=$TOK" "renewal re-plants the SAME token"
+assert_grep "$REFRESH_COOKIE" 'Max-Age=63072000' "renewal cookie Max-Age=63072000"
+assert_grep "$REFRESH_COOKIE" 'SameSite=Strict' "renewal cookie SameSite=Strict"
+if printf '%s' "$REFRESH_COOKIE" | grep -qi 'secure'; then
+    red "renewal Set-Cookie carries 'Secure' over http://: $REFRESH_COOKIE"; exit 1
+fi
+green "  ✓ renewal cookie has NO Secure attribute over http://"
+assert_sql \
+    "SELECT count(*) FROM session WHERE token = '$TOK' AND datetime(expires_at) > datetime('now', '+729 days');" \
+    "1" "renewal pushed expires_at back out to ~2 years"
+# A dead session is never re-planted: an unknown token on a GET gets no cookie.
+DEAD_HEADERS_FILE="$TMP/dead.headers"
+caddy_curl --output /dev/null --dump-header "$DEAD_HEADERS_FILE" \
+    --cookie "session=deadbeef" "${CADDY_BASE}/"
+if grep -qi '^set-cookie:' "$DEAD_HEADERS_FILE"; then
+    red "unknown session token was re-planted on GET"; cat "$DEAD_HEADERS_FILE" >&2; exit 1
+fi
+green "  ✓ unknown token: no cookie re-planted"
 
 # ===========================================================================
 #  STEP 7 — wrong password rejected, sets no session.

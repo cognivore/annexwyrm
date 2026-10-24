@@ -2,6 +2,8 @@
 //
 // Uses argon2id for password storage and a 256-bit random session token
 // stored in the `session` table and as a `Set-Cookie: session=…` cookie.
+// How long both live, and the cookie's attributes, are web/session's
+// business (`session-expiry`, `session-cookie`) — not decided here.
 
 module web/handler/login
 
@@ -15,6 +17,7 @@ import effects/config
 import effects/crypto
 import web/prefs
 import web/server
+import web/session
 import web/html/login
 import web/multipart
 
@@ -45,7 +48,7 @@ pub fun handle-login-post( req : request )
         else
           val tok = rand-hex(32)
           val now = now-iso()
-          val expiry = iso-from-unix(now-unix() + 60 * 60 * 24 * 14) // 14d
+          val expiry = session-expiry()
           // Rotate: drop any prior sessions for this actor before minting a
           // new one, so a fresh login invalidates older tokens (a stolen or
           // stale cookie does not outlive the next login).
@@ -55,16 +58,7 @@ pub fun handle-login-post( req : request )
             "VALUES (?,?,?,?)",
             [txt(tok), txt(aid), txt(now), txt(expiry)]
           )
-          val resp = see-other("/")
-          // SameSite=Strict (not Lax): the session cookie authorises only
-          // owner mutations (upload/edit/publish/follow/logout); it never
-          // needs to ride a cross-site request. Strict means no browser
-          // attaches it to ANY cross-origin request, closing the CSRF gap
-          // that Lax leaves open for cross-site POSTs. HttpOnly keeps it
-          // out of JS; Secure (HTTPS only) is added on the public site.
-          resp.with-header("Set-Cookie",
-            "session=" ++ tok ++ "; Path=/; HttpOnly; SameSite=Strict; Max-Age=1209600"
-            ++ secure-attr(req))
+          see-other("/").with-header("Set-Cookie", session-cookie(req, tok))
 
 pub fun handle-logout( req : request )
   : <db,log,config,div|e> response
@@ -87,23 +81,6 @@ fun form-get( fs : list<(string,string)>, k : string ) : string
   match fs
     Nil -> ""
     Cons((k0,v), rest) -> if k0 == k then v else form-get(rest, k)
-
-// "; Secure" iff this request arrived over HTTPS. Caddy in front of the
-// daemon sets X-Forwarded-Proto; the tuntun-fronted public site pins it to
-// `https`, the local http:// dev site to `http`. Secure means "send only
-// over HTTPS", so adding it unconditionally would silently break login on
-// the http://annexwyrm.localhost dev path (the browser would drop the
-// cookie) — exactly the trap the previous CTO hit. Gate it on the scheme.
-fun secure-attr( req : request ) : string
-  if req.header("x-forwarded-proto").default("") == "https"
-    then "; Secure" else ""
-
-fun cookie-value( header-val : string, name : string ) : string
-  header-val.split(";").map(fn(s) s.trim).flatmap(fn(p)
-    match p.starts-with(name ++ "=")
-      Just(slc) -> [slc.string]
-      Nothing   -> []
-  ).head.default("")
 
 fun text( v : sql-value ) : string
   match v { SqlText(s) -> s; _ -> "" }

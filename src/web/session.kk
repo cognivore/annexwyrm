@@ -17,6 +17,7 @@ module web/session
 
 import core/types
 import effects/db
+import effects/time
 import web/server
 
 // The resolved session: which local actor, and whether they are the admin.
@@ -63,6 +64,81 @@ pub fun is-admin-session( req : request ) : db bool
 // never matches.
 pub fun is-owner-of( req : request, owner : url ) : db bool
   owner != "" && session-actor(req) == owner
+
+// ----------------------------------------------------------------------
+//  Session lifetime — the ONE place that knows how long a login lasts.
+//
+//  Two years. A browser session lives in two coupled places: the `session`
+//  row (`expires_at`, the authority) and the `Set-Cookie` the browser keeps
+//  (`Max-Age`, which only has to be long enough for the browser to still
+//  present the token). Both are minted from `session-ttl-seconds` so they
+//  cannot drift. Browsers cap a single Set-Cookie at 400 days (RFC 6265bis;
+//  Chrome, Firefox and Safari all enforce it), so the two years are reached
+//  by RENEWAL: `refresh-session` re-plants the cookie and pushes the row's
+//  expiry out again on the first authenticated request of each day. A
+//  device that visits at least once every 400 days therefore never sees the
+//  login form again; one idle for two years is logged out by the row.
+// ----------------------------------------------------------------------
+
+pub fun session-ttl-seconds() : int
+  60 * 60 * 24 * 730                           // 2 years
+
+// Renew when the row has less than (TTL - 1 day) left, i.e. at most once a
+// day per session, never on every page view.
+fun renew-threshold-seconds() : int
+  session-ttl-seconds() - 60 * 60 * 24
+
+// The `expires_at` for a session minted or renewed right now.
+pub fun session-expiry() : time iso-time
+  iso-from-unix(now-unix() + session-ttl-seconds())
+
+// The full `Set-Cookie` value for session token `tok`.
+//   * SameSite=Strict (not Lax): the cookie authorises only owner mutations
+//     (upload/edit/publish/follow/logout) and never needs to ride a
+//     cross-site request; Strict means no browser attaches it to ANY
+//     cross-origin request, closing the CSRF gap Lax leaves for cross-site
+//     POSTs. HttpOnly keeps it out of JS.
+//   * Secure only over HTTPS — see `secure-attr`.
+pub fun session-cookie( req : request, tok : string ) : string
+  "session=" ++ tok ++ "; Path=/; HttpOnly; SameSite=Strict; Max-Age="
+    ++ session-ttl-seconds().show ++ secure-attr(req)
+
+// "; Secure" iff this request arrived over HTTPS. Caddy in front of the
+// daemon sets X-Forwarded-Proto; the public site pins it to `https`, the
+// local http:// dev site to `http`. Secure means "send only over HTTPS", so
+// adding it unconditionally would silently break login on the
+// http://annexwyrm.localhost dev path (the browser would drop the cookie) —
+// exactly the trap the previous CTO hit. Gate it on the scheme.
+pub fun secure-attr( req : request ) : string
+  if req.header("x-forwarded-proto").default("") == "https"
+    then "; Secure" else ""
+
+// Sliding renewal, applied by the dispatcher to EVERY response. No-ops when
+// the response already manages the cookie itself (login, register, logout
+// all set `Set-Cookie`), when the request carries no session, when the
+// session is dead (the row is the authority — a stale cookie is never
+// re-planted), or when the row was renewed within the last day. Otherwise
+// the row's expiry and the browser's cookie both jump to now + TTL.
+pub fun refresh-session( req : request, resp : response ) : <db,time|e> response
+  match resp.header("set-cookie")
+    Just(_)  -> resp
+    Nothing  ->
+      val tok = cookie-value(req.header("cookie").default(""), "session")
+      if tok == "" then resp
+      else
+        val rows = query(
+          "SELECT (datetime(expires_at) < datetime('now', '+' || ? || ' seconds')) " ++
+          "FROM session WHERE token = ? AND datetime(expires_at) > datetime('now')",
+          [num(renew-threshold-seconds()), txt(tok)]
+        )
+        match rows
+          Cons(r, _) ->
+            if int(r.col(0)) == 1 then
+              val _ = exec("UPDATE session SET expires_at = ? WHERE token = ?",
+                           [txt(session-expiry()), txt(tok)])
+              resp.with-header("Set-Cookie", session-cookie(req, tok))
+            else resp
+          Nil -> resp
 
 // Parse a single cookie value out of a `Cookie:` header.
 pub fun cookie-value( header-val : string, name : string ) : string
