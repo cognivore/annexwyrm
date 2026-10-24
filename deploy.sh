@@ -22,6 +22,7 @@ set -euo pipefail
 #       MAX_REQ_BYTES); the synchronous rclone put to Drive can take minutes)
 #   - certbot certonly --webroot -w /var/www/html -d wyrm.fere.me
 #   - Porkbun A record wyrm.fere.me -> 46.62.199.15
+#   - nightly database backup: ops/backup/README.md (systemd timer → encrypted Drive remote)
 #
 # Data (/var/lib/annexwyrm) and secrets (/etc/annexwyrm) live OUTSIDE the
 # rsync target, so --delete can never touch them.

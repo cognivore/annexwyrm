@@ -1,0 +1,10 @@
+[Unit]
+Description=annexwyrm — nightly database backup to the encrypted archive remote
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=HOME=/root
+ExecStart=/opt/annexwyrm/ops/backup/annexwyrm-backup.sh
+Nice=10
