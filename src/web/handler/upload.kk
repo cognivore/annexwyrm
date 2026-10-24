@@ -54,35 +54,54 @@ pub fun handle-upload-post( req : request )
     match parse-multipart(ct, req.body)
       Nothing -> bad-request("expected multipart/form-data")
       Just(parts) ->
-        val summary = parts.field("summary").default("")
-        val content = parts.field("content").default("")
-        val rating = clamp-rating(parts.field("rating").default("99").parse-int.default(99))
-        val in-reply-to = parts.field("in_reply_to").default("")
-        val tags = parse-tags(parts.field("tags").default(""))
-        match files(parts)
-          // A FILE-LESS review: a pure-text review that references a resource
-          // (e.g. a book on bookwyrm) by its URL, with no blob. The file is
-          // optional now — annexwyrm reviews are not only file archives.
-          Nil ->
-            val name = parts.field("name").default("")
-            ingest-textonly(name, summary, content, rating, in-reply-to, tags, owner)
-          Cons(f, _) ->
-            match load-tenant-store(owner)
-              Nothing ->
-                server-error("configure your storage in settings before uploading files")
-              Just(ts) ->
-                val name = parts.field("name").default(f.filename)
-                // The publish-file checkbox: present (any value) ⇒ publish now.
-                val publish-now = parts.field("publish_file").is-just
-                ingest(f, name, summary, content, rating, in-reply-to, publish-now, tags, owner, ts)
+        match ingest-parts(parts, owner)
+          Ingested(slug) -> see-other("/items/" ++ slug)
+          NoStorage -> server-error("configure your storage in settings before uploading files")
+          ArchivePutFailed(remote) ->
+            server-error("archive put failed: blob could not be written to " ++ remote)
+          PublicPutFailed(remote) ->
+            server-error("public put failed: blob could not be published to " ++ remote)
+
+// What an ingest came to. The form and the JSON API map these to their own
+// responses; the decision of what happened is made once, here.
+pub type ingest-outcome
+  Ingested( slug : string )
+  NoStorage                            // a file upload, but the tenant has no storage configured
+  ArchivePutFailed( remote : string )  // the mandatory archive copy could not be verified
+  PublicPutFailed( remote : string )   // archived fine, but publishing to the public remote failed
+
+// Ingest a parsed multipart upload for `owner` — the one path for the
+// /upload form and the API's multipart create. Field names are the form's.
+pub fun ingest-parts( parts : list<mpart>, owner : url )
+  : <db,time,rng,log,config,store,crypto,div|e> ingest-outcome
+  val summary = parts.field("summary").default("")
+  val content = parts.field("content").default("")
+  val rating = clamp-rating(parts.field("rating").default("99").parse-int.default(99))
+  val in-reply-to = parts.field("in_reply_to").default("")
+  val tags = parse-tags(parts.field("tags").default(""))
+  match files(parts)
+    // A FILE-LESS review: a pure-text review that references a resource
+    // (e.g. a book on bookwyrm) by its URL, with no blob. The file is
+    // optional now — annexwyrm reviews are not only file archives.
+    Nil ->
+      val name = parts.field("name").default("")
+      Ingested(ingest-textonly(name, summary, content, rating, in-reply-to, tags, owner))
+    Cons(f, _) ->
+      match load-tenant-store(owner)
+        Nothing -> NoStorage
+        Just(ts) ->
+          val name = parts.field("name").default(f.filename)
+          // The publish-file checkbox: present (any value) ⇒ publish now.
+          val publish-now = parts.field("publish_file").is-just
+          ingest(f, name, summary, content, rating, in-reply-to, publish-now, tags, owner, ts)
 
 // A file-less review: build a Note-kind item with no blob (byte 0, no sha,
 // no remotes, not published), persist it + its tags, and federate the Create.
-// Mirrors ingest's tail but skips all the blob machinery.
-fun ingest-textonly(
+// Mirrors ingest's tail but skips all the blob machinery. Returns the slug.
+pub fun ingest-textonly(
     name : string, summary : string, content : string,
     rating : int, in-reply-to : string, tags : list<string>, owner : url
-  ) : <db,time,rng,log,config,div|e> response
+  ) : <db,time,rng,log,config,div|e> string
   val now = now-iso()
   val slug = rand-hex(12)
   val id = get-base-url() ++ "/items/" ++ slug
@@ -99,9 +118,9 @@ fun ingest-textonly(
   save-item-tags(id, tags)
   emit-create(it)
   info("upload/done-textonly", [("id", id), ("rating", rating.show)])
-  see-other("/items/" ++ slug)
+  slug
 
-fun ingest(
+pub fun ingest(
     f : mpart,
     name : string,
     summary : string,
@@ -112,7 +131,7 @@ fun ingest(
     tags : list<string>,
     owner : url,
     ts : tenant-store
-  ) : <db,time,rng,log,config,store,crypto,div|e> response
+  ) : <db,time,rng,log,config,store,crypto,div|e> ingest-outcome
   val now = now-iso()
   val slug = rand-hex(12)
   val id = get-base-url() ++ "/items/" ++ slug
@@ -133,8 +152,7 @@ fun ingest(
   if !blob-has(archive-loc) then
     error("upload/archive-put-failed",
       [("remote", ts.archive), ("slug", slug)])
-    server-error("archive put failed: blob could not be written to " ++
-                 ts.archive)
+    ArchivePutFailed(ts.archive)
   else
     // Record the archive mirror row (published=0, the encrypted backend).
     val archive-remote = Item-remote(
@@ -161,17 +179,16 @@ fun ingest(
     if !publish-now then
       info("upload/done",
         [("id", id), ("size", byte-size.show), ("file_published", "0")])
-      see-other("/items/" ++ slug)
+      Ingested(slug)
     else
       // Publish the file inline: the bytes are still in hand (f.body), so
       // we do NOT round-trip through the archive remote here.
       if publish-file-blob(it1, slug, f.body, ts) then
         info("upload/done",
           [("id", id), ("size", byte-size.show), ("file_published", "1")])
-        see-other("/items/" ++ slug)
+        Ingested(slug)
       else
-        server-error("public put failed: blob could not be published to " ++
-                     ts.pubrem)
+        PublicPutFailed(ts.pubrem)
 
 fun guess-kind( media : string ) : object-kind
   match media-type/parse(media)

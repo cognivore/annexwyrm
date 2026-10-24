@@ -10,6 +10,11 @@ green()  { printf '\033[32m%s\033[0m\n' "$*" >&2; }
 yellow() { printf '\033[33m%s\033[0m\n' "$*" >&2; }
 note()   { printf '\033[34m::\033[0m %s\n' "$*" >&2; }
 
+# The request host is `x.test`, not `x`: curl 8.22+ refuses to store or send
+# cookies for a hostname without a dot, which made every cookie-backed step
+# 403 under nixpkgs' curl while the system curl (8.21) sailed through. The
+# daemon ignores the Host header, so any dotted name works.
+#
 # Run curl against the dev socket, suppressing the trailing newline issue
 # but always printing what we got back to the run log.
 sock_curl() {
@@ -22,13 +27,21 @@ sock_curl() {
     printf '%s' "$out"
 }
 
+# Octal permission bits of a file, portably: BSD stat spells it `-f %Lp`,
+# GNU stat `-c %a` (and GNU `-f` means *filesystem* status, which is how a
+# "600, want 600" mismatch came out of a Linux run). Python reads the mode
+# the same way everywhere.
+file_mode() {
+    python3 -c 'import os, sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777)[2:])' "$1"
+}
+
 # `assert_status PATH EXPECTED` — checks that GET PATH returns EXPECTED.
 assert_status() {
     local sock="$1" path="$2" expected="$3"
     local code
     code=$(curl --silent --output /dev/null --write-out '%{http_code}' \
                 --unix-socket "$sock" \
-                "http://x$path" || true)
+                "http://x.test$path" || true)
     if [ "$code" != "$expected" ]; then
         red "expected $expected for $path, got $code"
         return 1
@@ -89,7 +102,7 @@ post_action() {
                 --request POST --data '' \
                 --output /dev/null --dump-header "$hdr" \
                 --write-out '%{http_code}' \
-                "http://x$path")
+                "http://x.test$path")
     local loc
     loc=$(grep -i '^location:' "$hdr" | head -1 \
           | sed -E 's/^[^:]*:[[:space:]]*//' | tr -d '\r')
@@ -122,7 +135,7 @@ edit_item() {
                 "${args[@]}" \
                 --output /dev/null --dump-header "$hdr" \
                 --write-out '%{http_code}' \
-                "http://x/items/$slug/edit")
+                "http://x.test/items/$slug/edit")
     local loc
     loc=$(grep -i '^location:' "$hdr" | head -1 \
           | sed -E 's/^[^:]*:[[:space:]]*//' | tr -d '\r')
@@ -137,7 +150,7 @@ edit_item_anon() {
     curl --silent --output /dev/null --write-out '%{http_code}' \
          --unix-socket "$sock" \
          --form-string "name=HACKED BY ANON" \
-         "http://x/items/$slug/edit"
+         "http://x.test/items/$slug/edit"
 }
 
 # Log in: POST /login with form-encoded credentials, save Set-Cookie
@@ -168,7 +181,7 @@ login() {
          --cookie-jar "$jar" \
          --data-urlencode "username=$user" \
          --data-urlencode "password=$pass" \
-         "http://x/login"
+         "http://x.test/login"
 }
 
 # Upload a file via multipart/form-data. Args:
@@ -214,7 +227,7 @@ upload() {
          --dump-header "$tmp_headers" \
          --output "$tmp_body" \
          "${form_args[@]}" \
-         "http://x/upload" >&2
+         "http://x.test/upload" >&2
     # Parse Location with `grep -i` + sed: BSD awk has no working IGNORECASE,
     # so the old `awk 'BEGIN{IGNORECASE=1}'` silently missed the daemon's
     # capitalised `Location:` header (matching post_action's approach).
@@ -240,7 +253,7 @@ fetch_html() {
     curl --silent --show-error \
          --unix-socket "$sock" \
          --cookie "$jar" \
-         "http://x$path"
+         "http://x.test$path"
 }
 
 # Fetch with anon (no cookie jar).
@@ -248,7 +261,7 @@ fetch_html_anon() {
     local sock="$1" path="$2"
     curl --silent --show-error \
          --unix-socket "$sock" \
-         "http://x$path"
+         "http://x.test$path"
 }
 
 # Fetch an item as ActivityPub JSON, anonymously (Accept: ld+json triggers
@@ -259,7 +272,7 @@ fetch_ap_anon() {
     curl --silent --show-error \
          --unix-socket "$sock" \
          -H "Accept: application/ld+json" \
-         "http://x$path"
+         "http://x.test$path"
 }
 
 # Block until SOCK accepts an HTTP request or TIMEOUT seconds elapse.
@@ -277,7 +290,7 @@ wait_for_socket() {
     while [ "$elapsed" -lt "$ticks" ]; do
         if [ -S "$sock" ] && \
            curl --silent --output /dev/null --max-time 2 \
-                --unix-socket "$sock" "http://x/" >/dev/null 2>&1; then
+                --unix-socket "$sock" "http://x.test/" >/dev/null 2>&1; then
             return 0
         fi
         sleep 0.2

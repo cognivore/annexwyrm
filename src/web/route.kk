@@ -34,6 +34,7 @@ import web/handler/search
 import web/handler/register
 import web/handler/invites
 import web/handler/help
+import web/handler/api
 
 // Split "/users/alice/inbox" → ["users", "alice", "inbox"].
 fun segments( path : string ) : list<string>
@@ -129,6 +130,16 @@ fun route-request( req : request )
     // Follow / unfollow ---------------------------------------------------
     ("POST",   Cons("follow", Nil))   -> handle-follow-action(req)
     ("POST",   Cons("unfollow", Nil)) -> handle-unfollow-action(req)
+
+    // The JSON API --------------------------------------------------------
+    ("POST",   Cons("api", Cons("login", Nil)))    -> handle-api-login(req)
+    ("DELETE", Cons("api", Cons("session", Nil)))  -> handle-api-logout(req)
+    ("GET",    Cons("api", Cons("me", Nil)))       -> handle-api-me(req)
+    ("GET",    Cons("api", Cons("items", Nil)))    -> handle-api-list(req)
+    ("POST",   Cons("api", Cons("items", Nil)))    -> handle-api-create(req)
+    ("GET",    Cons("api", Cons("items", Cons(id, Nil))))   -> handle-api-get(req, id)
+    ("PATCH",  Cons("api", Cons("items", Cons(id, Nil))))   -> handle-api-patch(req, id)
+    ("PUT",    Cons("api", Cons("items", Cons(id, Cons("file", Nil))))) -> handle-api-put-file(req, id)
 
     // Anything else -------------------------------------------------------
     _ -> not-found("no route: " ++ req.method ++ " " ++ req.path)

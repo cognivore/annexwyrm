@@ -187,6 +187,47 @@ in `src/web/multipart.kk` runs against the Unix socket the same way it would
 against a TCP socket. Body size is capped by Caddy (`request_body max_size`)
 and re-checked by us.
 
+## JSON API
+
+Everything the forms do, for scripts, agents and other apps — through the
+same persist-and-federate code, so an API edit emits the same `Update`
+a form edit does and an API upload archives before anything is written.
+
+```
+POST   /api/login             {"username","password"} → {"token","actor","expires_at"}
+DELETE /api/session           revoke the bearer token
+GET    /api/me                who the token is
+GET    /api/items[?limit&page]  every item, newest first; GET /api/items/<slug> for one
+POST   /api/items             JSON {name,summary,content,rating,in_reply_to,tags}
+                              or multipart/form-data with a `file` part (the /upload form's fields)
+PATCH  /api/items/<slug>      any subset: name, summary, content, rating|null,
+                              in_reply_to|null, tags[], file_published — field by field
+PUT    /api/items/<slug>/file raw bytes; Content-Type, X-Filename; ?publish=1
+```
+
+Authenticate with `Authorization: Bearer <token>`. A token is an ordinary
+session (two years, renewed on use); `/api/login` does not rotate the
+browser's session, a browser login does rotate every token. A PATCH is
+parsed in full before anything runs: an unknown field, a rating outside
+-3..3 or an empty patch is a 400 that changed nothing. Tags are
+normalised the way the form normalises them (lowercase, `#` stripped,
+`[a-z0-9_-]` only, deduplicated, at most 20) and come back sorted. Errors
+are `{"error": "…"}` with the usual status codes (400, 401, 403, 404, 415, 500).
+
+```
+tok=$(curl -s -X POST https://wyrm.example/api/login -H 'Content-Type: application/json' \
+        -d '{"username":"sweater","password":"…"}' | jq -r .token)
+curl -s -X POST https://wyrm.example/api/items -H "Authorization: Bearer $tok" \
+     -H 'Content-Type: application/json' \
+     -d '{"name":"The Appeal","rating":2,"in_reply_to":"https://bookwyrm.social/book/1","tags":["novel"]}'
+curl -s -X PATCH https://wyrm.example/api/items/<slug> -H "Authorization: Bearer $tok" \
+     -H 'Content-Type: application/json' -d '{"rating":3}'
+curl -s -X PUT 'https://wyrm.example/api/items/<slug>/file?publish=1' -H "Authorization: Bearer $tok" \
+     -H 'Content-Type: application/pdf' -H 'X-Filename: appeal.pdf' --data-binary @appeal.pdf
+```
+
+`tests/e2e/run.sh` Step E drives every endpoint over the daemon's socket.
+
 ## Build
 
 Everything is Nix. No `apt`, no `brew`, no `cargo`, no shell installers.

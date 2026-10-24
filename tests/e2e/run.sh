@@ -173,7 +173,7 @@ note "daemon up (pid $DAEMON_PID)"
 ready=0
 for _ in $(seq 1 10); do
     if curl --silent --output /dev/null --max-time 2 \
-            --unix-socket "$SOCK" "http://x/" >/dev/null 2>&1; then
+            --unix-socket "$SOCK" "http://x.test/" >/dev/null 2>&1; then
         ready=1
         break
     fi
@@ -428,10 +428,10 @@ TWO_PATH=$(upload "$SOCK" "$JAR" "$PDF_TWO" \
     "Second PDF" "" "<p>another archived review.</p>" "99" "")
 TWO_URL="http://localhost$TWO_PATH"
 ANON_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' \
-    --unix-socket "$SOCK" --request POST --data '' "http://x$TWO_PATH/publish-file")
+    --unix-socket "$SOCK" --request POST --data '' "http://x.test$TWO_PATH/publish-file")
 [ "$ANON_CODE" = "403" ] || { red "anon publish-file: expected 403, got $ANON_CODE"; exit 1; }
 green "  ✓ anon publish-file → 403"
-ANON_BODY=$(curl --silent --unix-socket "$SOCK" --request POST --data '' "http://x$TWO_PATH/publish-file")
+ANON_BODY=$(curl --silent --unix-socket "$SOCK" --request POST --data '' "http://x.test$TWO_PATH/publish-file")
 assert_grep "$ANON_BODY" "login required" "anon publish-file refused"
 assert_sql "$DB" "SELECT file_published FROM item WHERE id='$TWO_URL';" \
     "0" "anon publish-file did NOT flip file_published"
@@ -551,7 +551,7 @@ ANNEXWYRM_PUBLIC_URL_BASE="http://example.test/dl" ANNEXWYRM_SERVE_DRAIN=0 \
 FAIL_PID=$!
 wait_for_socket "$FAIL_SOCK" 10 || { red "fail-daemon did not start"; cat "$FAIL_LOG" >&2; exit 1; }
 for _ in $(seq 1 10); do
-    curl --silent --output /dev/null --max-time 2 --unix-socket "$FAIL_SOCK" "http://x/" >/dev/null 2>&1 && break
+    curl --silent --output /dev/null --max-time 2 --unix-socket "$FAIL_SOCK" "http://x.test/" >/dev/null 2>&1 && break
     sleep 0.5
 done
 login "$FAIL_SOCK" "$FAIL_JAR" "alice" "$TEST_PASS"
@@ -562,7 +562,7 @@ FAIL_CODE=$(curl --silent --output /dev/null --write-out '%{http_code}' \
     --form-string "name=Doomed" --form-string "summary=" \
     --form-string "content=<p>this should never persist</p>" \
     --form-string "rating=99" --form-string "in_reply_to=" \
-    "http://x/upload")
+    "http://x.test/upload")
 case "$FAIL_CODE" in
     5*) green "  ✓ archive-put failure → $FAIL_CODE (5xx)" ;;
     *)  red "archive-put failure: expected 5xx, got $FAIL_CODE"; cat "$FAIL_LOG" >&2; exit 1 ;;
@@ -1174,7 +1174,7 @@ curl -s -o /dev/null -D "$PTXT_HDR" --unix-socket "$SOCK" --cookie "$JAR" \
   --form-string "rating=2" \
   --form-string "in_reply_to=https://bookwyrm.social/book/1000" \
   --form-string "tags=scifi" \
-  "http://x/upload"
+  "http://x.test/upload"
 PTXT_PATH=$(grep -i '^location:' "$PTXT_HDR" | sed -E 's/^[^:]*:[[:space:]]*//' | tr -d '\r'); rm -f "$PTXT_HDR"
 [ -n "$PTXT_PATH" ] || { red "file-less upload returned no Location"; exit 1; }
 PTXT_URL="http://localhost$PTXT_PATH"
@@ -1216,7 +1216,7 @@ curl -s -o /dev/null -D "$RF_HDR" --unix-socket "$SOCK" --cookie "$JAR" \
   --form-string "name=Little Fires" --form-string "summary=" \
   --form-string "content=A review that will gain a file." \
   --form-string "rating=1" --form-string "in_reply_to=https://bookwyrm.social/book/2000" \
-  "http://x/upload"
+  "http://x.test/upload"
 RF_PATH=$(grep -i '^location:' "$RF_HDR" | sed -E 's/^[^:]*:[[:space:]]*//' | tr -d '\r'); rm -f "$RF_HDR"
 RF_URL="http://localhost$RF_PATH"; RF_SLUG="${RF_PATH##*/}"
 green "  file-less review: $RF_PATH (slug $RF_SLUG)"
@@ -1254,11 +1254,11 @@ green "  ✓ R1: archived item federates no attachment"
 # --- R1b: the OWNER (signed in) CAN privately download the archived file via
 #          the authenticated /items/<id>/file route; an anon CANNOT. The blob
 #          is streamed from the encrypted archive — it never gets a public URL.
-OWN_CODE=$(curl -s -o "$TMP/r1b.own.dl" -w '%{http_code}' --unix-socket "$SOCK" --cookie "$JAR" "http://x$RF_PATH/file")
+OWN_CODE=$(curl -s -o "$TMP/r1b.own.dl" -w '%{http_code}' --unix-socket "$SOCK" --cookie "$JAR" "http://x.test$RF_PATH/file")
 [ "$OWN_CODE" = "200" ] || { red "R1b: owner private download expected 200, got $OWN_CODE"; exit 1; }
 cmp -s "$TMP/r1b.own.dl" "$PDF_ONE" || { red "R1b: owner-downloaded archived bytes != original"; exit 1; }
 green "  ✓ R1b: owner privately downloads the archived file (200, bytes == original)"
-ANON_DL_CODE=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" "http://x$RF_PATH/file")
+ANON_DL_CODE=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" "http://x.test$RF_PATH/file")
 [ "$ANON_DL_CODE" = "403" ] || { red "R1b: anon private download expected 403, got $ANON_DL_CODE"; exit 1; }
 green "  ✓ R1b: anon is FORBIDDEN from the private download (403, no bytes)"
 # the page: owner sees the private download link; anon does NOT.
@@ -1331,7 +1331,7 @@ done
 green "  ✓ R3: attachment + all public-blob references retracted from federation"
 # Make-private revokes PUBLIC access but the OWNER keeps private access — the
 # archive copy is intact, so the authenticated download still works.
-R3_OWN_CODE=$(curl -s -o "$TMP/r3.own.dl" -w '%{http_code}' --unix-socket "$SOCK" --cookie "$JAR" "http://x$RF_PATH/file")
+R3_OWN_CODE=$(curl -s -o "$TMP/r3.own.dl" -w '%{http_code}' --unix-socket "$SOCK" --cookie "$JAR" "http://x.test$RF_PATH/file")
 { [ "$R3_OWN_CODE" = "200" ] && cmp -s "$TMP/r3.own.dl" "$PDF_ONE"; } \
     && green "  ✓ R3: owner still privately downloads the file (public revoked, owner access intact)" \
     || { red "R3: owner lost private access after make-private (code=$R3_OWN_CODE)"; exit 1; }
@@ -1365,11 +1365,11 @@ OWNER=$(sqlite3 "$DB" "SELECT id FROM actor WHERE local=1 LIMIT 1;")
     for n in $(seq -w 1 60); do
         # year 3000 ⇒ these sort newest; lexical order on the zero-padded
         # second makes pg-60 the newest and pg-01 the oldest of the batch.
-        echo "INSERT INTO item (id,owner_id,object_type,name,published_at,updated_at) VALUES ('http://x/items/pg-$n','$OWNER','Note','pgitem-$n','3000-01-01T00:00:${n}Z','3000-01-01T00:00:${n}Z');"
+        echo "INSERT INTO item (id,owner_id,object_type,name,published_at,updated_at) VALUES ('http://x.test/items/pg-$n','$OWNER','Note','pgitem-$n','3000-01-01T00:00:${n}Z','3000-01-01T00:00:${n}Z');"
     done
     echo "COMMIT;"
 } | sqlite3 "$DB" >/dev/null
-assert_sql "$DB" "SELECT count(*) FROM item WHERE id LIKE 'http://x/items/pg-%';" "60" "seeded 60 paginated rows"
+assert_sql "$DB" "SELECT count(*) FROM item WHERE id LIKE 'http://x.test/items/pg-%';" "60" "seeded 60 paginated rows"
 
 # Page 1 (newest): controls present, a link to page 2, current marker = 1,
 # the newest seeded row, and the "newer" step disabled (no page 0).
@@ -1415,24 +1415,24 @@ green "  ✓ pagination cursor clamps both ends"
 note "=== Step S — responsiveness modes (container width setting) ==="
 S_HOME=$(fetch_html_anon "$SOCK" "/")
 assert_grep "$S_HOME" '<style>body{max-width:1080px}</style>' "default container width is 1080px"
-S_ANON_GET=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" "http://x/settings")
+S_ANON_GET=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" "http://x.test/settings")
 [ "$S_ANON_GET" = "403" ] || { red "anon GET /settings expected 403, got $S_ANON_GET"; exit 1; }
-S_ANON_POST=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" --data "width=1440px" "http://x/settings")
+S_ANON_POST=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" --data "width=1440px" "http://x.test/settings")
 [ "$S_ANON_POST" = "403" ] || { red "anon POST /settings expected 403, got $S_ANON_POST"; exit 1; }
 green "  ✓ /settings is owner-only (anon GET + POST → 403)"
 S_FORM=$(fetch_html "$SOCK" "$JAR" "/settings")
 assert_grep "$S_FORM" '<select name="width">' "settings form renders the width selector"
 assert_grep "$S_FORM" '<option value="1080px" selected>' "current mode (1080px) pre-selected"
-S_POST=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" --cookie "$JAR" --data "width=1440px" "http://x/settings")
+S_POST=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" --cookie "$JAR" --data "width=1440px" "http://x.test/settings")
 [ "$S_POST" = "303" ] || { red "owner POST width=1440px expected 303, got $S_POST"; exit 1; }
 assert_grep "$(fetch_html_anon "$SOCK" "/")" '<style>body{max-width:1440px}</style>' "container width switches to 1440px site-wide"
-curl -s -o /dev/null --unix-socket "$SOCK" --cookie "$JAR" --data "width=none" "http://x/settings"
+curl -s -o /dev/null --unix-socket "$SOCK" --cookie "$JAR" --data "width=none" "http://x.test/settings"
 assert_grep "$(fetch_html_anon "$SOCK" "/")" '<style>body{max-width:none}</style>' "unlimited mode renders max-width:none"
-S_BAD=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" --cookie "$JAR" --data "width=666px;background:url(x)" "http://x/settings")
+S_BAD=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" --cookie "$JAR" --data "width=666px;background:url(x)" "http://x.test/settings")
 [ "$S_BAD" = "400" ] || { red "bogus width expected 400, got $S_BAD"; exit 1; }
 assert_sql "$DB" "SELECT value FROM setting WHERE key='container_width';" "none" "bogus width NOT stored (no CSS injection into <style>)"
 green "  ✓ width modes validate against the closed set"
-curl -s -o /dev/null --unix-socket "$SOCK" --cookie "$JAR" --data "width=1080px" "http://x/settings"
+curl -s -o /dev/null --unix-socket "$SOCK" --cookie "$JAR" --data "width=1080px" "http://x.test/settings"
 assert_grep "$(fetch_html_anon "$SOCK" "/")" '<style>body{max-width:1080px}</style>' "container width restored to the 1080px default"
 
 # ===========================================================================
@@ -1445,9 +1445,9 @@ note "=== Step T — multitenancy (invite → register → cross-tenant view) ==
 BOB_JAR="$TMP/bob-jar"
 
 # (a) Admin mints an invite; anon cannot even see the page.
-ANON_INV=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" "http://x/invites")
+ANON_INV=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" "http://x.test/invites")
 [ "$ANON_INV" = "403" ] || { red "anon GET /invites expected 403, got $ANON_INV"; exit 1; }
-curl -s -o /dev/null --unix-socket "$SOCK" --cookie "$JAR" --data-urlencode "note=for bob" "http://x/invites"
+curl -s -o /dev/null --unix-socket "$SOCK" --cookie "$JAR" --data-urlencode "note=for bob" "http://x.test/invites"
 INVITE_TOK=$(sqlite3 "$DB" "SELECT token FROM invite WHERE used_by IS NULL ORDER BY created_at DESC LIMIT 1;")
 [ -n "$INVITE_TOK" ] || { red "admin mint invite produced no open invite row"; exit 1; }
 green "  ✓ admin minted an invite; anon /invites → 403"
@@ -1460,7 +1460,7 @@ assert_status "$SOCK" "/register?invite=deadbeefdeadbeef" 404
 #     invite (a rejected attempt must not burn the token).
 reg() { curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" \
           --data-urlencode "invite=$1" --data-urlencode "username=$2" \
-          --data-urlencode "password=$3" --data-urlencode "confirm=$4" "http://x/register"; }
+          --data-urlencode "password=$3" --data-urlencode "confirm=$4" "http://x.test/register"; }
 reg "$INVITE_TOK" "alice" "hunter2hunter" "hunter2hunter" >/dev/null   # taken
 reg "$INVITE_TOK" "admin" "hunter2hunter" "hunter2hunter" >/dev/null   # reserved
 reg "$INVITE_TOK" "bob"   "short"         "short"         >/dev/null   # too short
@@ -1473,7 +1473,7 @@ assert_sql "$DB" "SELECT count(*) FROM actor WHERE username='admin' AND local=1;
 BOB_CODE=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" --cookie-jar "$BOB_JAR" \
   --data-urlencode "invite=$INVITE_TOK" --data-urlencode "username=bob" \
   --data-urlencode "password=swordfish99" --data-urlencode "confirm=swordfish99" \
-  --data-urlencode "name=Bob" "http://x/register")
+  --data-urlencode "name=Bob" "http://x.test/register")
 [ "$BOB_CODE" = "303" ] || { red "valid register expected 303, got $BOB_CODE"; exit 1; }
 assert_sql "$DB" "SELECT is_admin FROM actor WHERE username='bob' AND local=1;" "0" "bob is a non-admin tenant"
 assert_sql "$DB" "SELECT count(*) FROM invite WHERE token='$INVITE_TOK' AND used_by IS NOT NULL;" "1" \
@@ -1482,7 +1482,7 @@ assert_status "$SOCK" "/register?invite=$INVITE_TOK" 404
 green "  ✓ registered tenant bob; the invite is single-use"
 
 # (e) bob's session works but bob is not an admin.
-BOB_INV=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" --cookie "$BOB_JAR" "http://x/invites")
+BOB_INV=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" --cookie "$BOB_JAR" "http://x.test/invites")
 [ "$BOB_INV" = "403" ] || { red "non-admin bob GET /invites expected 403, got $BOB_INV"; exit 1; }
 green "  ✓ bob (non-admin) cannot reach /invites"
 
@@ -1493,7 +1493,7 @@ green "  ✓ bob (non-admin) cannot reach /invites"
 #     fails FAST locally ("section not found") with no network call.
 stor() { curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" --cookie "$BOB_JAR" \
            --data-urlencode "rclone_conf=$1" --data-urlencode "archive_remote=$2" \
-           --data-urlencode "public_remote=$3" --data-urlencode "public_url_base=$4" "http://x/settings/storage"; }
+           --data-urlencode "public_remote=$3" --data-urlencode "public_url_base=$4" "http://x.test/settings/storage"; }
 [ "$(stor 'x' "$TMP/x" "cloud:b" '')"            = "400" ] || { red "local-path archive must be rejected"; exit 1; }
 [ "$(stor 'type = local' "a:x" "b:y" '')"        = "400" ] || { red "type=local config must be rejected"; exit 1; }
 [ "$(stor '' "a:x" "b:y" '')"                    = "400" ] || { red "blank config must be rejected (no ambient fallback)"; exit 1; }
@@ -1519,21 +1519,21 @@ assert_sql "$DB" "SELECT username FROM actor a JOIN item i ON i.owner_id=a.id WH
 # rclone so its token refreshes persist — so glob for it.
 BOB_CONF_FILE=$(ls "$DATA"/storage/http___localhost_users_bob-*.conf 2>/dev/null | head -1)
 [ -n "$BOB_CONF_FILE" ] || { red "bob's rclone config was not materialised to a file"; exit 1; }
-BOB_PERM=$(stat -f '%Lp' "$BOB_CONF_FILE" 2>/dev/null || stat -c '%a' "$BOB_CONF_FILE")
+BOB_PERM=$(file_mode "$BOB_CONF_FILE" 2>/dev/null || stat -c '%a' "$BOB_CONF_FILE")
 [ "$BOB_PERM" = "600" ] || { red "materialised config perms = $BOB_PERM, want 600"; exit 1; }
 green "  ✓ bob uploaded via HIS rclone config (materialised 0600, passed as --config)"
 
 # (h) THE CORE FEATURE: a DIFFERENT tenant (admin alice) downloads bob's
 #     archived file — streamed through bob's config — byte-exact.
-ALICE_DL=$(curl -s -o "$TMP/alice-got.pdf" -w '%{http_code}' --unix-socket "$SOCK" --cookie "$JAR" "http://x/items/$BOB_SLUG/file")
+ALICE_DL=$(curl -s -o "$TMP/alice-got.pdf" -w '%{http_code}' --unix-socket "$SOCK" --cookie "$JAR" "http://x.test/items/$BOB_SLUG/file")
 [ "$ALICE_DL" = "200" ] || { red "cross-tenant download expected 200, got $ALICE_DL"; exit 1; }
 cmp -s "$TMP/alice-got.pdf" "$PDF_TWO" || { red "cross-tenant download bytes differ from bob's file"; exit 1; }
 green "  ✓ alice downloaded bob's file, byte-exact, via bob's config"
 
 # (i) Anon cannot download; a non-owner cannot mutate.
-ANON_DL=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" "http://x/items/$BOB_SLUG/file")
+ANON_DL=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" "http://x.test/items/$BOB_SLUG/file")
 [ "$ANON_DL" = "403" ] || { red "anon file download expected 403, got $ANON_DL"; exit 1; }
-ALICE_PUB=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" --cookie "$JAR" --data "" "http://x/items/$BOB_SLUG/publish-file")
+ALICE_PUB=$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" --cookie "$JAR" --data "" "http://x.test/items/$BOB_SLUG/publish-file")
 [ "$ALICE_PUB" = "403" ] || { red "non-owner publish expected 403, got $ALICE_PUB"; exit 1; }
 green "  ✓ anon download forbidden; a non-owner cannot publish/mutate bob's item"
 
@@ -1547,7 +1547,7 @@ green "  ✓ the shared archive attributes items across tenants"
 # (k) Storage SELF-TEST: bob's saved config round-trips (a real rclone
 #     write→read→delete through HIS config), so the page reports uploads will
 #     work — and the probe object is cleaned up, never left behind.
-BOB_TEST=$(curl -s --unix-socket "$SOCK" --cookie "$BOB_JAR" --data "" "http://x/settings/storage/test")
+BOB_TEST=$(curl -s --unix-socket "$SOCK" --cookie "$BOB_JAR" --data "" "http://x.test/settings/storage/test")
 assert_grep "$BOB_TEST" "uploads will work" "self-test confirms bob's secrets work for uploads"
 [ ! -e "$TMP/bob-archive/.annexwyrm-selftest" ] || { red "self-test left its probe object behind"; exit 1; }
 green "  ✓ self-test round-trips bob's config and cleans up the probe"
@@ -1555,10 +1555,148 @@ green "  ✓ self-test round-trips bob's config and cleans up the probe"
 # (l) A broken backend (archive points at a remote not in the config) self-tests
 #     as FAILED — the tenant learns up front, not on first upload.
 sqlite3 "$DB" "UPDATE tenant_storage SET archive_remote='ghost:$TMP/nope' WHERE actor_id='http://localhost/users/bob';"
-BOB_BAD=$(curl -s --unix-socket "$SOCK" --cookie "$BOB_JAR" --data "" "http://x/settings/storage/test")
+BOB_BAD=$(curl -s --unix-socket "$SOCK" --cookie "$BOB_JAR" --data "" "http://x.test/settings/storage/test")
 assert_grep "$BOB_BAD" "archive remote (uploads): FAILED" "a broken archive remote self-tests as FAILED"
 sqlite3 "$DB" "UPDATE tenant_storage SET archive_remote='bobarch:$TMP/bob-archive' WHERE actor_id='http://localhost/users/bob';"
 green "  ✓ self-test surfaces a broken backend as FAILED before any upload"
+
+# ===========================================================================
+#  Step E — the JSON API: login, create, edit field by field, upload, publish.
+#  Every call rides the same persist-and-federate tail as the forms, so the
+#  assertions check the DB, the daemon log and the HTML page, not just the
+#  JSON echo. python3 reads the JSON (the Caddy suite already needs it).
+# ===========================================================================
+note "=== Step E — JSON API ==="
+jpath() {
+    python3 -c '
+import json, sys
+v = json.load(sys.stdin)
+for k in sys.argv[1].split("."):
+    if k == "":
+        continue
+    v = v[int(k)] if isinstance(v, list) else v.get(k)
+    if v is None:
+        break
+if v is None:
+    print("null")
+elif isinstance(v, bool):
+    print("true" if v else "false")
+elif isinstance(v, (dict, list)):
+    print(json.dumps(v))
+else:
+    print(v)' "$1"
+}
+api()      { curl -s --unix-socket "$SOCK" "$@"; }
+api_code() { curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCK" "$@"; }
+api_check() { # api_check VALUE EXPECTED LABEL
+    if [ "$1" = "$2" ]; then green "  ✓ $3 = $2"; else red "$3: expected '$2', got '$1'"; exit 1; fi
+}
+
+# (a) login: wrong password refused, right one mints a 64-hex token, and the
+#     browser's cookie session survives (no rotation on an API login).
+api_check "$(api_code -X POST -H 'Content-Type: application/json' --data '{"username":"alice","password":"nope"}' http://x.test/api/login)" \
+    "401" "api login with a wrong password"
+E_LOGIN=$(api -X POST -H 'Content-Type: application/json' --data "{\"username\":\"alice\",\"password\":\"$TEST_PASS\"}" http://x.test/api/login)
+TOKEN=$(printf '%s' "$E_LOGIN" | jpath token)
+[ "${#TOKEN}" = "64" ] || { red "api login returned no 64-hex token: $E_LOGIN"; exit 1; }
+AUTH="Authorization: Bearer $TOKEN"
+api_check "$(printf '%s' "$E_LOGIN" | jpath actor)" "$ACTOR_URL" "api login actor"
+api_check "$(api_code --cookie "$JAR" http://x.test/upload)" "200" "browser session still logged in after an API login"
+api_check "$(printf '%s' "$(api -H "$AUTH" http://x.test/api/me)" | jpath username)" "alice" "GET /api/me username"
+api_check "$(api_code http://x.test/api/me)" "401" "GET /api/me without a token"
+api_check "$(api_code -H 'Authorization: Bearer deadbeef' http://x.test/api/me)" "401" "GET /api/me with a bogus token"
+# a bearer client is never handed a cookie
+if api -D - -o /dev/null -H "$AUTH" http://x.test/api/me | grep -qi '^set-cookie:'; then
+    red "a bearer request was handed a Set-Cookie"; exit 1; fi
+green "  ✓ bearer requests get no cookie"
+
+# (b) create a text-only review
+E_CREATE=$(api -X POST -H "$AUTH" -H 'Content-Type: application/json' -w '\n%{http_code}' \
+    --data "{\"name\":\"API review\",\"content\":\"<p>made by the api</p>\",\"rating\":2,\"in_reply_to\":\"$ARCH_URL\",\"tags\":[\"api\",\"Review-Test\"]}" \
+    http://x.test/api/items)
+api_check "$(printf '%s' "$E_CREATE" | tail -n1)" "201" "POST /api/items status"
+E_BODY=$(printf '%s' "$E_CREATE" | sed '$d')
+API_SLUG=$(printf '%s' "$E_BODY" | jpath slug)
+API_URL="http://localhost/items/$API_SLUG"
+api_check "$(printf '%s' "$E_BODY" | jpath rating)" "2" "created rating"
+api_check "$(printf '%s' "$E_BODY" | jpath in_reply_to)" "$ARCH_URL" "created in_reply_to"
+api_check "$(printf '%s' "$E_BODY" | jpath tags)" '["api", "review-test"]' "created tags (normalised)"
+api_check "$(printf '%s' "$E_BODY" | jpath file_published)" "false" "created file_published"
+assert_grep "$(fetch_html_anon "$SOCK" "/items/$API_SLUG")" "made by the api" "the API-made review renders on its page"
+assert_sql "$DB" "SELECT count(*) FROM activity WHERE type='Create' AND object_id='$API_URL';" "1" "API create emitted one Create"
+assert_sql "$DB" "SELECT group_concat(tag, ',') FROM (SELECT tag FROM item_tag WHERE item_id='$API_URL' ORDER BY tag);" "api,review-test" "API create persisted the tags"
+
+# (c) edit field by field: each PATCH changes exactly its field
+patch() { api -X PATCH -H "$AUTH" -H 'Content-Type: application/json' --data "$1" "http://x.test/api/items/$API_SLUG"; }
+P1=$(patch '{"rating":-1}')
+api_check "$(printf '%s' "$P1" | jpath rating)" "-1" "PATCH rating"
+api_check "$(printf '%s' "$P1" | jpath name)" "API review" "PATCH rating left the name alone"
+P2=$(patch '{"name":"API review, renamed"}')
+api_check "$(printf '%s' "$P2" | jpath name)" "API review, renamed" "PATCH name"
+api_check "$(printf '%s' "$P2" | jpath rating)" "-1" "PATCH name left the rating alone"
+P3=$(patch '{"tags":["one","TWO","#three"]}')
+api_check "$(printf '%s' "$P3" | jpath tags)" '["one", "three", "two"]' "PATCH tags (normalised, returned sorted)"
+P4=$(patch '{"in_reply_to":null}')
+api_check "$(printf '%s' "$P4" | jpath in_reply_to)" "null" "PATCH in_reply_to to null"
+P5=$(patch '{"content":"<p>edited body</p>"}')
+api_check "$(printf '%s' "$P5" | jpath content)" "<p>edited body</p>" "PATCH content"
+assert_grep "$(fetch_html_anon "$SOCK" "/items/$API_SLUG")" "edited body" "the edited body renders on the page"
+P6=$(patch '{"rating":null}')
+api_check "$(printf '%s' "$P6" | jpath rating)" "null" "PATCH rating to null"
+U1=$(printf '%s' "$P1" | jpath updated_at); U6=$(printf '%s' "$P6" | jpath updated_at)
+[ "$U1" \< "$U6" ] || [ "$U1" = "$U6" ] || { red "updated_at went backwards: $U1 > $U6"; exit 1; }
+green "  ✓ updated_at advances across edits"
+assert_sql "$DB" "SELECT count(*) >= 6 FROM activity WHERE type='Update' AND object_id='$API_URL';" "1" "each API edit federated an Update"
+
+# (d) rejected patches change nothing
+api_check "$(api_code -X PATCH -H "$AUTH" -H 'Content-Type: application/json' --data '{"rating":7}' "http://x.test/api/items/$API_SLUG")" "400" "rating out of range"
+api_check "$(api_code -X PATCH -H "$AUTH" -H 'Content-Type: application/json' --data '{"bogus":1}' "http://x.test/api/items/$API_SLUG")" "400" "unknown field"
+api_check "$(api_code -X PATCH -H "$AUTH" -H 'Content-Type: application/json' --data '{}' "http://x.test/api/items/$API_SLUG")" "400" "empty patch"
+api_check "$(api_code -X PATCH -H "$AUTH" -H 'Content-Type: application/json' --data 'not json' "http://x.test/api/items/$API_SLUG")" "400" "non-JSON body"
+api_check "$(api_code -X PATCH -H "$AUTH" -H 'Content-Type: application/json' --data '{"file_published":true}' "http://x.test/api/items/$API_SLUG")" "400" "publishing a file-less review"
+api_check "$(api_code -X PATCH -H 'Content-Type: application/json' --data '{"name":"x"}' "http://x.test/api/items/$API_SLUG")" "401" "PATCH without a token"
+api_check "$(api_code -X PATCH --cookie "$BOB_JAR" -H 'Content-Type: application/json' --data '{"name":"x"}' "http://x.test/api/items/$API_SLUG")" "403" "PATCH by a non-owner"
+api_check "$(api_code -X PATCH -H "$AUTH" -H 'Content-Type: application/json' --data '{"name":"x"}' "http://x.test/api/items/nope")" "404" "PATCH on a missing item"
+api_check "$(printf '%s' "$(api "http://x.test/api/items/$API_SLUG")" | jpath name)" "API review, renamed" "rejected patches left the item as it was"
+
+# (e) upload bytes to the review, then publish and retract the file by PATCH
+PDF_BYTES=$(wc -c < "$PDF_ONE" | tr -d ' ')
+PF=$(api -X PUT -H "$AUTH" -H 'Content-Type: application/pdf' -H 'X-Filename: api.pdf' --data-binary "@$PDF_ONE" "http://x.test/api/items/$API_SLUG/file")
+api_check "$(printf '%s' "$PF" | jpath media_type)" "application/pdf" "PUT file media_type"
+api_check "$(printf '%s' "$PF" | jpath byte_size)" "$PDF_BYTES" "PUT file byte_size"
+api_check "$(printf '%s' "$PF" | jpath file_published)" "false" "PUT file starts archived"
+[ "$(printf '%s' "$PF" | jpath sha256)" != "null" ] || { red "PUT file recorded no sha256"; exit 1; }
+rclone lsf --files-only "$ARCHIVE_REMOTE/" | grep -qx "$API_SLUG" || { red "PUT file: archive blob $API_SLUG missing from $ARCHIVE_REMOTE"; exit 1; }
+green "  ✓ PUT file archived the bytes (verified in the archive remote)"
+PP=$(patch '{"file_published":true}')
+api_check "$(printf '%s' "$PP" | jpath file_published)" "true" "PATCH file_published=true"
+[ "$(printf '%s' "$PP" | jpath file_public_url)" != "null" ] || { red "publish minted no public URL"; exit 1; }
+rclone lsf --files-only "$PUBLIC_REMOTE/" | grep -qx "$API_SLUG" || { red "publish: public blob $API_SLUG missing from $PUBLIC_REMOTE"; exit 1; }
+green "  ✓ publish by PATCH copied the blob to the public remote + minted a URL"
+PR=$(patch '{"file_published":false}')
+api_check "$(printf '%s' "$PR" | jpath file_published)" "false" "PATCH file_published=false"
+api_check "$(printf '%s' "$PR" | jpath file_public_url)" "null" "retract cleared the public URL"
+if rclone lsf --files-only "$PUBLIC_REMOTE/" | grep -qx "$API_SLUG"; then red "retract left the public blob in place"; exit 1; fi
+green "  ✓ retract by PATCH deleted the public blob (verified)"
+
+# (f) multipart create through the API, with a file, published at once
+# --form-string for the literals: `-F` reads `<p>…` as a file to attach.
+MC=$(api -X POST -H "$AUTH" -w '\n%{http_code}' --form-string "name=API multipart" --form-string "content=<p>with a file</p>" \
+    --form-string "rating=1" --form-string "publish_file=1" --form-string "tags=mp" -F "file=@$PDF_TWO;type=application/pdf" http://x.test/api/items)
+api_check "$(printf '%s' "$MC" | tail -n1)" "201" "multipart POST /api/items status"
+MC_BODY=$(printf '%s' "$MC" | sed '$d')
+api_check "$(printf '%s' "$MC_BODY" | jpath file_published)" "true" "multipart create published the file"
+api_check "$(printf '%s' "$MC_BODY" | jpath rating)" "1" "multipart create rating"
+api_check "$(printf '%s' "$MC_BODY" | jpath tags)" '["mp"]' "multipart create tags"
+
+# (g) the list sees them; (h) logout revokes the token
+L=$(api 'http://x.test/api/items?limit=100')
+printf '%s' "$L" | python3 -c "import json,sys; d=json.load(sys.stdin); slugs=[i['slug'] for i in d['items']]; assert '$API_SLUG' in slugs and d['total'] >= len(slugs) >= 2, (slugs, d['total'])" \
+    && green "  ✓ GET /api/items lists the API-made items" || { red "GET /api/items missing the API-made items"; exit 1; }
+api_check "$(api_code -X DELETE -H "$AUTH" http://x.test/api/session)" "204" "DELETE /api/session"
+api_check "$(api_code -H "$AUTH" http://x.test/api/me)" "401" "the revoked token is refused"
+api_check "$(api_code -X POST -H "$AUTH" -H 'Content-Type: application/json' --data '{"name":"x"}' http://x.test/api/items)" "401" "the revoked token cannot create"
+green "  ✓ Step E — JSON API passed"
 
 green ""
 green "=========================================="

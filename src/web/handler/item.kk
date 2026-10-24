@@ -212,7 +212,7 @@ pub fun handle-item-edit-post( req : request, id : string )
 // the whole pre-edit item: capturing a SECOND annex-item value struct across
 // an effectful bind trips koka#654 ("multiple value type fields"). Only `base`
 // (one annex-item) may flow through the effectful body.
-fun apply-file-change(
+pub fun apply-file-change(
     base : annex-item, was-published : bool, new-file : maybe<mpart>,
     want-public : bool, slug : string, now : iso-time, tags : list<string>,
     ts-opt : maybe<tenant-store>
@@ -333,7 +333,7 @@ fun guess-kind( media : string ) : object-kind
 // Effectful tail for an edit: persist the already-built item and federate
 // the Update. The item is a PARAMETER (not a local capture) and this
 // returns () — the koka#654-safe shape shared with ship-published-item.
-fun ship-edited-item( it : annex-item, tags : list<string> )
+pub fun ship-edited-item( it : annex-item, tags : list<string> )
   : <db,time,rng,log,config,div|e> ()
   save-item(it)                 // self-preserves the OLD tags…
   save-item-tags(it.id, tags)   // …which we then override with the edit's set

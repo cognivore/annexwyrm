@@ -32,6 +32,22 @@ pub fun handle-login-post( req : request )
   if username == "" || password == "" then
     ok-html(render-login-form("missing fields", get-page-width()))
   else
+    match verify-login(username, password)
+      Nothing -> ok-html(render-login-form("invalid credentials", get-page-width()))
+      Just(aid) ->
+        // Rotate: a browser login drops this actor's prior sessions, so a
+        // stolen or stale cookie does not outlive the next login. (That
+        // includes API tokens — mint them again after a browser login.)
+        val (tok, _) = mint-session(aid, True)
+        see-other("/").with-header("Set-Cookie", session-cookie(req, tok))
+
+// The one password check: the local actor id for a username/password
+// pair, or Nothing. Shared by the form and the JSON API so there is a
+// single place credentials are judged.
+pub fun verify-login( username : string, password : string )
+  : <db,crypto|e> maybe<string>
+  if username == "" || password == "" then Nothing
+  else
     val rows = query(
       "SELECT a.id, l.password_hash FROM actor a " ++
       "JOIN local_login l ON l.actor_id = a.id " ++
@@ -39,26 +55,28 @@ pub fun handle-login-post( req : request )
       [txt(username)]
     )
     match rows
-      Nil -> ok-html(render-login-form("invalid credentials", get-page-width()))
+      Nil -> Nothing
       Cons(r, _) ->
-        val aid = text(r.col(0))
-        val phc = text(r.col(1))
-        if !argon2id-verify(phc, password) then
-          ok-html(render-login-form("invalid credentials", get-page-width()))
-        else
-          val tok = rand-hex(32)
-          val now = now-iso()
-          val expiry = session-expiry()
-          // Rotate: drop any prior sessions for this actor before minting a
-          // new one, so a fresh login invalidates older tokens (a stolen or
-          // stale cookie does not outlive the next login).
-          val _ = exec("DELETE FROM session WHERE actor_id = ?", [txt(aid)])
-          exec(
-            "INSERT INTO session (token, actor_id, created_at, expires_at) " ++
-            "VALUES (?,?,?,?)",
-            [txt(tok), txt(aid), txt(now), txt(expiry)]
-          )
-          see-other("/").with-header("Set-Cookie", session-cookie(req, tok))
+        if argon2id-verify(text(r.col(1)), password) then Just(text(r.col(0)))
+        else Nothing
+
+// Mint a session row for `aid`; returns (token, expires_at). `rotate`
+// first deletes the actor's other sessions (the browser login's
+// invalidation story); the API login keeps them, so a script's token
+// does not log the browser out.
+pub fun mint-session( aid : string, rotate : bool ) : <db,time,rng|e> (string, iso-time)
+  val tok = rand-hex(32)
+  val now = now-iso()
+  val expiry = session-expiry()
+  if rotate then
+    val _ = exec("DELETE FROM session WHERE actor_id = ?", [txt(aid)])
+    ()
+  val _ = exec(
+    "INSERT INTO session (token, actor_id, created_at, expires_at) " ++
+    "VALUES (?,?,?,?)",
+    [txt(tok), txt(aid), txt(now), txt(expiry)]
+  )
+  (tok, expiry)
 
 pub fun handle-logout( req : request )
   : <db,log,config,div|e> response

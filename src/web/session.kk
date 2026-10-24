@@ -30,7 +30,7 @@ pub value struct session-info
 // actor, or Nothing. The expiry check is in SQL (datetime compare), exactly
 // as the old owner check was.
 pub fun current-session( req : request ) : db maybe<session-info>
-  val tok = cookie-value(req.header("cookie").default(""), "session")
+  val tok = session-token(req)
   if tok == "" then Nothing
   else
     val rows = query(
@@ -123,7 +123,7 @@ pub fun refresh-session( req : request, resp : response ) : <db,time|e> response
   match resp.header("set-cookie")
     Just(_)  -> resp
     Nothing  ->
-      val tok = cookie-value(req.header("cookie").default(""), "session")
+      val tok = session-token(req)
       if tok == "" then resp
       else
         val rows = query(
@@ -136,9 +136,27 @@ pub fun refresh-session( req : request, resp : response ) : <db,time|e> response
             if int(r.col(0)) == 1 then
               val _ = exec("UPDATE session SET expires_at = ? WHERE token = ?",
                            [txt(session-expiry()), txt(tok)])
-              resp.with-header("Set-Cookie", session-cookie(req, tok))
+              // The row is renewed for everyone; only a cookie client is
+              // handed the cookie again.
+              if session-is-bearer(req) then resp
+              else resp.with-header("Set-Cookie", session-cookie(req, tok))
             else resp
           Nil -> resp
+
+// The session token a request carries: `Authorization: Bearer <token>`
+// (the JSON API, scripts, agents) or the `session` cookie (the browser).
+// Same table, same lifetime, same owner — a bearer token IS a session
+// token, so revoking one revokes the other and nothing has two notions of
+// "logged in".
+pub fun session-token( req : request ) : string
+  match req.header("authorization").default("").trim.starts-with("Bearer ")
+    Just(rest) -> rest.string.trim
+    Nothing    -> cookie-value(req.header("cookie").default(""), "session")
+
+// True iff the request authenticated with a bearer header rather than a
+// cookie — such a client manages its own token and gets no Set-Cookie.
+pub fun session-is-bearer( req : request ) : bool
+  req.header("authorization").default("").trim.starts-with("Bearer ").is-just
 
 // Parse a single cookie value out of a `Cookie:` header.
 pub fun cookie-value( header-val : string, name : string ) : string
