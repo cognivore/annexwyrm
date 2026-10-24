@@ -49,6 +49,14 @@
           koka = kokaPatched;
         };
 
+        # The rageveil-credentialed API driver (README "JSON API"). rageveil
+        # itself comes from the caller's PATH; it is not a nixpkgs package.
+        packages.wyrm-api = pkgs.writeShellApplication {
+          name = "wyrm-api";
+          runtimeInputs = with pkgs; [ curl python3 file coreutils ];
+          text = pkgs.lib.removePrefix "#!/usr/bin/env bash\n" (builtins.readFile ./scripts/wyrm-api);
+        };
+
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             # Toolchain

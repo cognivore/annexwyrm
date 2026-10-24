@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# wyrm-api — drive the annexwyrm JSON API with credentials from rageveil alone.
+#
+#   wyrm-api METHOD PATH [BODY]      BODY is inline JSON, or @file for raw bytes
+#
+#   wyrm-api GET /api/me
+#   wyrm-api POST /api/items '{"name":"The Appeal","rating":2,"tags":["novel"]}'
+#   wyrm-api PATCH /api/items/<slug> '{"rating":3}'
+#   wyrm-api PUT '/api/items/<slug>/file?publish=1' @appeal.pdf
+#   wyrm-api DELETE /api/session     revokes the cached token
+#
+# Credentials come from rageveil and nowhere else (WYRM_HOST and WYRM_USER
+# select the site and the login; the defaults are the live wyrm):
+#   <host>/<user>            the login password
+#   <host>/<user>/api-token  the bearer token, cached here after the first login
+#                            and reused until the server answers 401, when a new
+#                            one is minted and cached in its place.
+# A token is a two-year session that renews on use. Minting one adds a session
+# and never logs the browser out. No secret is printed or put on a command line:
+# the password travels on stdin, the token in a header file curl reads.
+# Prints the response body; exits non-zero on any status >= 400.
+set -euo pipefail
+umask 077
+
+host="${WYRM_HOST:-wyrm.sweater.vac.fere.me}"
+user="${WYRM_USER:-sweater}"
+base="https://$host"
+pw_entry="$host/$user"
+tok_entry="$host/$user/api-token"
+
+method="${1:?usage: wyrm-api METHOD PATH [BODY]}"
+path="${2:?usage: wyrm-api METHOD PATH [BODY]}"
+body="${3:-}"
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/wyrm-api.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+hdr="$tmp/headers"
+out="$tmp/body"
+
+cached_token() { rageveil show "$tok_entry" 2>/dev/null | tr -d '\n' || true; }
+
+mint_token() {
+    local tok
+    rageveil show "$pw_entry" >/dev/null 2>&1 \
+        || { echo "wyrm-api: no rageveil entry $pw_entry (the password of $user at $host)" >&2; return 1; }
+    tok=$(python3 - "$base" "$user" "$pw_entry" <<'PY'
+import json, subprocess, sys, urllib.error, urllib.request
+base, user, entry = sys.argv[1:4]
+pw = subprocess.run(["rageveil", "show", entry], capture_output=True, text=True, check=True).stdout.rstrip("\n")
+req = urllib.request.Request(f"{base}/api/login", data=json.dumps({"username": user, "password": pw}).encode(),
+                             headers={"Content-Type": "application/json"}, method="POST")
+try:
+    with urllib.request.urlopen(req, timeout=30) as r:
+        print(json.load(r)["token"])
+except urllib.error.HTTPError as e:
+    sys.exit(f"wyrm-api: {base}/api/login answered {e.code}: {e.read().decode(errors='replace')}")
+PY
+    )
+    [ "${#tok}" = 64 ] || { echo "wyrm-api: $base/api/login did not return a token" >&2; return 1; }
+    if rageveil show "$tok_entry" >/dev/null 2>&1; then
+        printf '%s' "$tok" | rageveil edit --batch "$tok_entry" >/dev/null
+    else
+        printf '%s' "$tok" | rageveil insert --batch "$tok_entry" >/dev/null
+    fi
+    rageveil sync >/dev/null 2>&1 || true
+    printf '%s' "$tok"
+}
+
+authorize() { printf 'Authorization: Bearer %s\n' "$1" > "$hdr"; }
+
+# Sends the request with the header file; prints the HTTP status, body lands in $out.
+request() {
+    local -a args=(-sS -m 120 -X "$method" -H "@$hdr" -o "$out" -w '%{http_code}')
+    case "$body" in
+        '') ;;
+        @*) args+=(-H "Content-Type: $(file -b --mime-type "${body#@}")" -H "X-Filename: $(basename "${body#@}")" --data-binary "$body") ;;
+        *)  args+=(-H 'Content-Type: application/json' --data "$body") ;;
+    esac
+    curl "${args[@]}" "$base$path"
+}
+
+tok=$(cached_token)
+[ -n "$tok" ] || tok=$(mint_token)
+authorize "$tok"
+status=$(request)
+if [ "$status" = 401 ] && [ "$path" != /api/session ]; then
+    tok=$(mint_token)
+    authorize "$tok"
+    status=$(request)
+fi
+cat "$out"
+if [ -s "$out" ] && [ "$(tail -c1 "$out")" != "" ]; then echo; fi
+[ "$status" -lt 400 ]

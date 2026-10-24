@@ -228,6 +228,25 @@ curl -s -X PUT 'https://wyrm.example/api/items/<slug>/file?publish=1' -H "Author
 
 `tests/e2e/run.sh` Step E drives every endpoint over the daemon's socket.
 
+### From rageveil, nothing on the command line
+
+`scripts/wyrm-api` (also `nix run .#wyrm-api --`) drives the whole API with
+rageveil as its only credential source: the password at `<host>/<user>` is
+read on first use, the token it mints is cached at `<host>/<user>/api-token`
+and reused until the server answers 401, when a fresh one replaces it. The
+password travels on stdin and the token in a header file curl reads; neither
+is printed or put in argv. `WYRM_HOST` and `WYRM_USER` pick the site and the
+login (default: the live wyrm as `sweater`). The response body is printed and
+any status >= 400 exits non-zero. Minting a token never logs the browser out.
+
+```
+wyrm-api GET /api/me
+wyrm-api POST /api/items '{"name":"The Appeal","rating":2,"tags":["novel"]}'
+wyrm-api PATCH /api/items/<slug> '{"rating":3}'
+wyrm-api PUT '/api/items/<slug>/file?publish=1' @appeal.pdf
+wyrm-api DELETE /api/session
+```
+
 ## Build
 
 Everything is Nix. No `apt`, no `brew`, no `cargo`, no shell installers.
