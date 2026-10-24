@@ -9,8 +9,9 @@
 #   wyrm-api PUT '/api/items/<slug>/file?publish=1' @appeal.pdf
 #   wyrm-api DELETE /api/session     revokes the cached token
 #
-# Credentials come from rageveil and nowhere else (WYRM_HOST and WYRM_USER
-# select the site and the login; the defaults are the live wyrm):
+# Credentials come from rageveil and nowhere else. WYRM_HOST and WYRM_USER
+# select the site and the login; the default is production, wyrm.fere.me,
+# as sweater (WYRM_HOST=wyrm.sweater.vac.fere.me is the vacationvm clone):
 #   <host>/<user>            the login password
 #   <host>/<user>/api-token  the bearer token, cached here after the first login
 #                            and reused until the server answers 401, when a new
@@ -22,7 +23,7 @@
 set -euo pipefail
 umask 077
 
-host="${WYRM_HOST:-wyrm.sweater.vac.fere.me}"
+host="${WYRM_HOST:-wyrm.fere.me}"
 user="${WYRM_USER:-sweater}"
 base="https://$host"
 pw_entry="$host/$user"

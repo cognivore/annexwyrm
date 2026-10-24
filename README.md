@@ -236,7 +236,8 @@ read on first use, the token it mints is cached at `<host>/<user>/api-token`
 and reused until the server answers 401, when a fresh one replaces it. The
 password travels on stdin and the token in a header file curl reads; neither
 is printed or put in argv. `WYRM_HOST` and `WYRM_USER` pick the site and the
-login (default: the live wyrm as `sweater`). The response body is printed and
+login (default: production, `wyrm.fere.me`, as `sweater`; the vacationvm
+clone is `WYRM_HOST=wyrm.sweater.vac.fere.me`). The response body is printed and
 any status >= 400 exits non-zero. Minting a token never logs the browser out.
 
 ```
