@@ -6,7 +6,7 @@ import web/html/layout
 
 // `token` is the (validated) invite token, carried as a hidden field.
 // `error` is a validation message to show ("" = none).
-pub fun render-register-form( token : string, error : string, max-width : string = "1080px" ) : string
+pub fun render-register-form( token : string, error : string, chrome : chrome = default-chrome ) : string
   val body = ([
     "<h1>register</h1>",
     "<p class=\"subtitle\">you've been invited to this annexwyrm. pick a handle and a password.</p>",
@@ -29,4 +29,4 @@ pub fun render-register-form( token : string, error : string, max-width : string
     "</form>",
     "<p class=\"hint\">after registering you'll set up your storage backend (rclone) in settings.</p>"
   ]).join("\n")
-  layout("register — annexwyrm", "", "<a href=\"/\">archive</a> · register", body, max-width)
+  layout("register — annexwyrm", "", "<a href=\"/\">archive</a> · register", body, chrome)

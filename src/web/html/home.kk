@@ -26,7 +26,7 @@ pub value struct home-row
 
 pub fun render-home( rows : list<home-row>, instance-name : string,
                      page : int, total : int, size : int,
-                     max-width : string = "1080px" ) : string
+                     chrome : chrome = default-chrome ) : string
   val body = ([
     "<h1>" ++ esc(instance-name) ++ "</h1>",
     "<p class=\"subtitle\">a public, shared archive — reviews from everyone here, newest first.</p>",
@@ -34,7 +34,7 @@ pub fun render-home( rows : list<home-row>, instance-name : string,
     items-list(rows),
     pagination("/?page=", page, total, size)
   ]).join("\n")
-  layout(instance-name, "", "<a href=\"/\">archive</a>", body, max-width)
+  layout(instance-name, "", "<a href=\"/\">archive</a>", body, chrome)
 
 // Page controls beneath a listing. `base` is the href prefix up to and
 // including "page=" — the caller composes any other query params first (e.g.

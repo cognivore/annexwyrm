@@ -7,6 +7,9 @@
 module web/prefs
 
 import effects/db
+import web/server
+import web/session
+import web/html/layout
 
 // The container max-width — the "responsiveness mode". One of
 // 860px / 1080px / 1440px / none (= unlimited). Stored as the literal CSS
@@ -30,3 +33,12 @@ pub fun set-page-width( v : string ) : db ()
     "INSERT OR REPLACE INTO setting (key, value) VALUES ('container_width', ?)",
     [txt(v)])
   ()
+
+// The page chrome for this request: the persisted width plus whoever is
+// signed in (native session or Velocity — web/session decides), so every
+// page's nav names the viewer instead of offering "login".
+pub fun page-chrome( req : request ) : db chrome
+  val viewer = match current-session(req)
+    Just(s) -> s.username
+    Nothing -> ""
+  Chrome(get-page-width(), viewer)

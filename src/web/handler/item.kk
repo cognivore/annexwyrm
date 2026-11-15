@@ -46,7 +46,7 @@ pub fun handle-item( req : request, id : string )
         val likes = count-likes(full-id)
         val shares = count-shares(full-id)
         val owner = is-owner-of(req, it.owner)
-        ok-html(render-item-page(it, likes, shares, owner, tags, get-page-width()))
+        ok-html(render-item-page(it, likes, shares, owner, tags, page-chrome(req)))
 
 // POST /items/<id>/publish-file — open the archived file to the public.
 // Gated to the item's OWNER, idempotent, and one-way for v1: it copies the
@@ -134,7 +134,7 @@ pub fun handle-item-edit-form( req : request, id : string )
       val who = session-actor(req)
       if who == "" then forbidden("login required")
       elif who != it.owner then forbidden("not your item")
-      else ok-html(render-edit-form(it, id, load-item-tags(full-id), get-page-width()))
+      else ok-html(render-edit-form(it, id, load-item-tags(full-id), page-chrome(req)))
 
 // POST /items/<id>/edit — apply a review edit AND any file change, then
 // federate a single Update. Owner-gated. Body is multipart/form-data so the

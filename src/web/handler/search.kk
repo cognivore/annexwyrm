@@ -22,12 +22,12 @@ import web/html/search
 // GET /search?q=…&page=N
 pub fun handle-search( req : request ) : <db,config,div|e> response
   val q = form-lookup(query-parse(req.query), "q").default("").trim
-  if q == "" then ok-html(render-search("", [], 1, 0, items-per-page, get-page-width()))
+  if q == "" then ok-html(render-search("", [], 1, 0, items-per-page, page-chrome(req)))
   else
     val size = items-per-page
     val total = count-search(q)
     val page = clamp-page(page-param(req.query), total, size)
-    ok-html(render-search(q, search-items(q, page, size), page, total, size, get-page-width()))
+    ok-html(render-search(q, search-items(q, page, size), page, total, size, page-chrome(req)))
 
 // GET /tags/<tag>?page=N
 pub fun handle-tag( req : request, seg : string ) : <db,config,div|e> response
@@ -41,7 +41,7 @@ pub fun handle-tag( req : request, seg : string ) : <db,config,div|e> response
       val size = items-per-page
       val total = count-tag(tag)
       val page = clamp-page(page-param(req.query), total, size)
-      ok-html(render-tag(tag, items-by-tag(tag, page, size), page, total, size, get-page-width()))
+      ok-html(render-tag(tag, items-by-tag(tag, page, size), page, total, size, page-chrome(req)))
 
 // Clamp a requested 1-based page into [1, pages] for `total` rows at `size`
 // per page, so a hand-typed cursor can't produce a negative offset or an
@@ -52,7 +52,7 @@ fun clamp-page( req-page : int, total : int, size : int ) : int
 
 // GET /tags
 pub fun handle-tags-index( req : request ) : <db,config|e> response
-  ok-html(render-tags-index(all-tags(), get-page-width()))
+  ok-html(render-tags-index(all-tags(), page-chrome(req)))
 
 // ----------------------------------------------------------------------
 //  Queries

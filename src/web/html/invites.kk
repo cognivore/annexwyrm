@@ -11,7 +11,7 @@ pub fun render-invites(
     base : string,
     opens : list<(string,string,string)>,
     used  : list<(string,string,string)>,
-    max-width : string = "1080px"
+    chrome : chrome = default-chrome
   ) : string
   val body = ([
     "<h1>invites</h1>",
@@ -28,7 +28,7 @@ pub fun render-invites(
     used-list(used)
   ]).join("\n")
   layout("invites — annexwyrm", "", "<a href=\"/\">archive</a> · <a href=\"/settings\">settings</a> · invites",
-    body, max-width)
+    body, chrome)
 
 fun open-list( base : string, opens : list<(string,string,string)> ) : string
   match opens

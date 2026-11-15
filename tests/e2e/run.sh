@@ -190,7 +190,20 @@ green "  daemon responds"
 #  login
 # ---------------------------------------------------------------------------
 
+# The nav's identity slot: anonymous visitors are offered "login"; a
+# signed-in browser sees its own username (linking to its profile) instead.
+NAV_ANON=$(curl -s --unix-socket "$SOCK" "http://x.test/")
+assert_grep "$NAV_ANON" '<a href="/login">login</a>' "anonymous nav offers login"
+
 login "$SOCK" "$JAR" "alice" "$TEST_PASS"
+
+NAV_SELF=$(curl -s --unix-socket "$SOCK" --cookie "$JAR" "http://x.test/")
+assert_grep "$NAV_SELF" '<a href="/users/alice">alice</a>' "signed-in nav names the viewer"
+if printf '%s' "$NAV_SELF" | grep -qF '<a href="/login">login</a>'; then
+    red "signed-in nav still offers login"
+    exit 1
+fi
+green "  ✓ signed-in nav no longer offers login"
 
 # ---------------------------------------------------------------------------
 #  generate the PDFs

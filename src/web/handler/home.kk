@@ -46,7 +46,7 @@ pub fun handle-home( req : request ) : <db,config,div|e> response
       file-published = intval(r.col(6)) != 0,
       owner          = text(r.col(7))
     ))
-    ok-html(render-home(items, get-instance-name(), page, total, size, get-page-width()))
+    ok-html(render-home(items, get-instance-name(), page, total, size, page-chrome(req)))
 
 fun text( v : sql-value ) : string
   match v { SqlText(s) -> s; _ -> "" }

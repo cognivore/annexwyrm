@@ -16,7 +16,7 @@ import annex/publish
 import web/html/layout
 
 pub fun render-item-page( i : annex-item, likes : int, shares : int, is-owner : bool,
-                          tags : list<string>, max-width : string = "1080px" ) : div string
+                          tags : list<string>, chrome : chrome = default-chrome ) : div string
   val followers = i.owner ++ "/followers"
   val obj = item-to-ap-object(i, followers, tags)
   val jsonld = json/show(ap-object/to-json(obj))
@@ -37,7 +37,7 @@ pub fun render-item-page( i : annex-item, likes : int, shares : int, is-owner : 
     owner-actions-block(i, is-owner),
     "</article>"
   ]).join("\n")
-  layout(title, jsonld, "<a href=\"/items/\">items</a> · " ++ esc(title), body, max-width)
+  layout(title, jsonld, "<a href=\"/items/\">items</a> · " ++ esc(title), body, chrome)
 
 // "review of <link>" preamble if this item references another resource. The
 // href is scheme-guarded (safe-url): a non-http(s) value like javascript: is

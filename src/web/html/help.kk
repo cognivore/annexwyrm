@@ -8,7 +8,7 @@ module web/html/help
 
 import web/html/layout
 
-pub fun render-storage-help( max-width : string = "1080px" ) : string
+pub fun render-storage-help( chrome : chrome = default-chrome ) : string
   val body = ([
     "<h1>setting up your storage backend</h1>",
     "<p class=\"subtitle\">annexwyrm stores your files on <strong>your own cloud</strong> (Google Drive, S3, Dropbox, …) using <a href=\"https://rclone.org\" target=\"_blank\" rel=\"noopener\">rclone</a>. This server never stores your files — you host your own content. Here's how, from scratch.</p>",
@@ -72,4 +72,4 @@ pub fun render-storage-help( max-width : string = "1080px" ) : string
   ]).join("\n")
   layout("storage setup — annexwyrm", "",
     "<a href=\"/\">archive</a> · <a href=\"/settings\">settings</a> · storage help",
-    body, max-width)
+    body, chrome)

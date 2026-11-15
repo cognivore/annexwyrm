@@ -7,6 +7,25 @@ module web/html/layout
 
 import core/types
 
+// What every page's frame needs to know about THIS request, as opposed to
+// the page's own content:
+//
+//   max-width — the container width ("responsiveness mode"): a CSS
+//               max-width value for <body> ("860px"/"1080px"/"1440px"/
+//               "none"), from the persisted `container_width` setting.
+//               Emitted as a <style> AFTER the stylesheet link so it wins
+//               the same-specificity body rule.
+//   viewer    — the signed-in local username, or "" when anonymous. The
+//               nav shows it (linking to the viewer's profile) in place of
+//               the login link. It is whoever web/session resolved, so a
+//               native session and a Velocity sign-in render alike.
+pub value struct chrome
+  max-width : string
+  viewer    : string
+
+// Anonymous, default width — for pages rendered without a request.
+pub val default-chrome = Chrome("1080px", "")
+
 // Standard `<html><head>…</head><body>…</body></html>` wrapper.
 //
 //   title       — appears in <title> and the top bar
@@ -14,19 +33,14 @@ import core/types
 //                 type="application/ld+json"> when non-empty
 //   crumbs      — breadcrumb HTML to put in the header
 //   inner       — the page body
-//   max-width   — the container width ("responsiveness mode"): a CSS
-//                 max-width value for <body> ("860px"/"1080px"/"1440px"/
-//                 "none"). Handlers read the persisted setting (the
-//                 `setting` table, key container_width) and thread it in;
-//                 the default matches the site default of 1080px. Emitted
-//                 as a <style> AFTER the stylesheet link so it wins the
-//                 same-specificity body rule.
+//   chrome      — the per-request page chrome (see `chrome` above).
+//                 Handlers build it with web/prefs `page-chrome(req)`.
 pub fun layout(
     title     : string,
     jsonld    : string,
     crumbs    : string,
     inner     : string,
-    max-width : string = "1080px"
+    chrome    : chrome = default-chrome
   ) : string
   ([
     "<!doctype html>",
@@ -37,7 +51,7 @@ pub fun layout(
     "  <title>" ++ esc(title) ++ "</title>",
     "  <link rel=\"stylesheet\" href=\"/static/style.css\">",
     "  <script src=\"/static/upload.js\" defer></script>",
-    "  <style>body{max-width:" ++ esc(max-width) ++ "}</style>",
+    "  <style>body{max-width:" ++ esc(chrome.max-width) ++ "}</style>",
     embed-jsonld(jsonld),
     "</head>",
     "<body>",
@@ -48,7 +62,7 @@ pub fun layout(
     "    <a href=\"/\">archive</a> ·",
     "    <a href=\"/upload\">upload</a> ·",
     "    <a href=\"/settings\">settings</a> ·",
-    "    <a href=\"/login\">login</a>",
+    viewer-link(chrome.viewer),
     "  </span>",
     "</header>",
     "<main>",
@@ -60,6 +74,11 @@ pub fun layout(
     "</body>",
     "</html>"
   ]).join("\n")
+
+// The nav's identity slot: who you are when signed in, else the way in.
+fun viewer-link( viewer : string ) : string
+  if viewer == "" then "    <a href=\"/login\">login</a>"
+  else "    <a href=\"/users/" ++ esc(viewer) ++ "\">" ++ esc(viewer) ++ "</a>"
 
 fun embed-jsonld( s : string ) : string
   if s == "" then ""

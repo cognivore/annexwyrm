@@ -19,7 +19,7 @@ module web/html/upload
 
 import web/html/layout
 
-pub fun render-upload-form( max-width : string = "1080px" ) : string
+pub fun render-upload-form( chrome : chrome = default-chrome ) : string
   val body = ([
     "<h1>upload</h1>",
     "<form action=\"/upload\" method=\"post\" enctype=\"multipart/form-data\">",
@@ -53,4 +53,4 @@ pub fun render-upload-form( max-width : string = "1080px" ) : string
     "  <button type=\"submit\">save</button>",
     "</form>"
   ]).join("\n")
-  layout("upload — annexwyrm", "", "<a href=\"/upload\">upload</a>", body, max-width)
+  layout("upload — annexwyrm", "", "<a href=\"/upload\">upload</a>", body, chrome)

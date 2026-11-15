@@ -10,4 +10,4 @@ import web/server
 import web/html/help
 
 pub fun handle-help-storage( req : request ) : db response
-  ok-html(render-storage-help(get-page-width()))
+  ok-html(render-storage-help(page-chrome(req)))

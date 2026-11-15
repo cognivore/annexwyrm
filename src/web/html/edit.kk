@@ -20,7 +20,7 @@ import annex/item
 import web/html/layout
 
 pub fun render-edit-form( i : annex-item, id : string, tags : list<string>,
-                          max-width : string = "1080px" ) : string
+                          chrome : chrome = default-chrome ) : string
   val body = ([
     "<h1>edit review</h1>",
     "<form action=\"/items/" ++ esc(id) ++ "/edit\" method=\"post\" enctype=\"multipart/form-data\">",
@@ -62,7 +62,7 @@ pub fun render-edit-form( i : annex-item, id : string, tags : list<string>,
     "</form>"
   ]).join("\n")
   layout("edit — annexwyrm", "",
-    "<a href=\"/items/" ++ esc(id) ++ "\">item</a> · edit", body, max-width)
+    "<a href=\"/items/" ++ esc(id) ++ "\">item</a> · edit", body, chrome)
 
 // True iff this item actually has a file blob (vs a pure-text review).
 fun has-file( i : annex-item ) : bool

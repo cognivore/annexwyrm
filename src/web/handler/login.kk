@@ -22,7 +22,7 @@ import web/html/login
 import web/multipart
 
 pub fun handle-login-form( req : request ) : <db,config|e> response
-  ok-html(render-login-form("", get-page-width()))
+  ok-html(render-login-form("", page-chrome(req)))
 
 pub fun handle-login-post( req : request )
   : <db,time,rng,log,config,crypto,div|e> response
@@ -30,10 +30,10 @@ pub fun handle-login-post( req : request )
   val username = form-get(form, "username")
   val password = form-get(form, "password")
   if username == "" || password == "" then
-    ok-html(render-login-form("missing fields", get-page-width()))
+    ok-html(render-login-form("missing fields", page-chrome(req)))
   else
     match verify-login(username, password)
-      Nothing -> ok-html(render-login-form("invalid credentials", get-page-width()))
+      Nothing -> ok-html(render-login-form("invalid credentials", page-chrome(req)))
       Just(aid) ->
         // Rotate: a browser login drops this actor's prior sessions, so a
         // stolen or stale cookie does not outlive the next login. (That

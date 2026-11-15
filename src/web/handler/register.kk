@@ -29,7 +29,7 @@ pub fun handle-register-form( req : request ) : <db,config,div|e> response
   if !invite-open(token) then
     not-found("invalid or expired invite")
   else
-    ok-html(render-register-form(token, "", get-page-width()))
+    ok-html(render-register-form(token, "", page-chrome(req)))
 
 // POST /register (token in the body, alongside the chosen credentials).
 pub fun handle-register-post( req : request )
@@ -45,15 +45,15 @@ pub fun handle-register-post( req : request )
     val confirm  = field-of(form, "confirm")
     val display  = field-of(form, "name").trim
     if username == "" || username.count > 32 then
-      reject(token, "username must be 1–32 chars of a–z, 0–9, '-' or '_'")
+      reject(req, token, "username must be 1–32 chars of a–z, 0–9, '-' or '_'")
     elif reserved(username) then
-      reject(token, "that username is reserved; pick another")
+      reject(req, token, "that username is reserved; pick another")
     elif username-taken(username) then
-      reject(token, "that username is already taken")
+      reject(req, token, "that username is already taken")
     elif password.count < 8 then
-      reject(token, "password must be at least 8 characters")
+      reject(req, token, "password must be at least 8 characters")
     elif password != confirm then
-      reject(token, "passwords do not match")
+      reject(req, token, "passwords do not match")
     else
       create-tenant(req, token, username, password, display)
 
@@ -139,8 +139,8 @@ fun reserved( u : string ) : bool
    "search","tags","tag","static","users","user","nodeinfo","follow",
    "unfollow","activities","well-known","api","public"].any(fn(r) r == u)
 
-fun reject( token : string, msg : string ) : <db,config|e> response
-  ok-html(render-register-form(token, msg, get-page-width()))
+fun reject( req : request, token : string, msg : string ) : <db,config|e> response
+  ok-html(render-register-form(token, msg, page-chrome(req)))
 
 fun field-of( fs : list<(string,string)>, k : string ) : string
   match fs

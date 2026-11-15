@@ -40,7 +40,7 @@ import interp/str   // byte-count: a total C-backed primitive (see below)
 
 pub fun handle-upload-form( req : request ) : <db,config|e> response
   if !is-tenant-session(req) then forbidden("login required")
-  else ok-html(render-upload-form(get-page-width()))
+  else ok-html(render-upload-form(page-chrome(req)))
 
 // Any logged-in tenant may upload; the item is owned by that tenant and (for
 // file uploads) stored in THEIR rclone backend. A file-less review needs no

@@ -30,7 +30,7 @@ pub fun handle-invites-form( req : request ) : <db,config,div|e> response
       "WHERE used_by IS NOT NULL ORDER BY used_at DESC LIMIT 50",
       []
     ).map(fn(r) (text(r.col(0)), text(r.col(1)), text(r.col(2))))
-    ok-html(render-invites(get-base-url(), opens, used, get-page-width()))
+    ok-html(render-invites(get-base-url(), opens, used, page-chrome(req)))
 
 pub fun handle-invites-post( req : request ) : <db,time,rng,log,config,div|e> response
   if !is-admin-session(req) then forbidden("admins only")

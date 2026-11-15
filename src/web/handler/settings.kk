@@ -34,7 +34,7 @@ pub fun handle-settings-form( req : request ) : <db,config,div|e> response
       Nothing -> False
     // no-store: the rendered form echoes the tenant's rclone secrets.
     ok-html(render-settings-form(w, saved, sf.rclone-conf, sf.archive,
-                                 sf.pubrem, sf.url-base, admin, w))
+                                 sf.pubrem, sf.url-base, admin, page-chrome(req)))
       .with-header("Cache-Control", "no-store")
 
 pub fun handle-settings-post( req : request ) : <db,config,div|e> response
@@ -109,7 +109,7 @@ fun render-storage-result( req : request, owner : url ) : <db,config,store,div|e
     Nothing  -> ("not configured", "not configured")
     Just(ts) -> (status-of(ts.self-test-archive), status-of(ts.self-test-pubrem))
   ok-html(render-settings-form(w, "storage", sf.rclone-conf, sf.archive,
-                               sf.pubrem, sf.url-base, admin, w, arch, pubr))
+                               sf.pubrem, sf.url-base, admin, page-chrome(req), arch, pubr))
     .with-header("Cache-Control", "no-store")
 
 // Map a self-test result to a display status: "" (success) → "ok"; any

@@ -13,12 +13,12 @@ import web/html/layout
 // `archive`, `pubrem`, `url-base` pre-fill the tenant's storage section.
 // `arch-status`/`pub-status` carry the self-test verdict for the storage
 // banner: "" = not tested (a plain GET), "ok" = reachable, anything else is a
-// failure reason. They are LAST (after max-width) so the GET caller, which
+// failure reason. They are LAST (after chrome) so the GET caller, which
 // omits them, gets the no-banner default.
 pub fun render-settings-form(
     current : string, saved : string,
     conf : string, archive : string, pubrem : string, url-base : string,
-    is-admin : bool, max-width : string = "1080px",
+    is-admin : bool, chrome : chrome = default-chrome,
     arch-status : string = "", pub-status : string = ""
   ) : string
   val body = ([
@@ -41,7 +41,7 @@ pub fun render-settings-form(
     storage-form(conf, archive, pubrem, url-base)
   ]).join("\n")
   layout("settings — annexwyrm", "", "<a href=\"/\">archive</a> · settings",
-    body, max-width)
+    body, chrome)
 
 // The self-test verdict, shown after a save / re-test. Empty when not tested.
 // The failure reason is rclone's own stderr, so esc() it.

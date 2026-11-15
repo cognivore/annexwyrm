@@ -34,7 +34,7 @@ pub fun handle-actor( req : request, u : string )
         val page = if req-page < 1 then 1 elif req-page > pages then pages else req-page
         val offset = (page - 1) * size
         ok-html(render-actor-page(a, user-items(a.id, size, offset),
-                                  page, total, size, get-page-width()))
+                                  page, total, size, page-chrome(req)))
 
 // Load a local tenant's actor row by username. Nothing when there is no such
 // local actor (the handler then 404s — multitenant: many local actors exist,

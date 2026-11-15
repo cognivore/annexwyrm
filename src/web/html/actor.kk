@@ -14,7 +14,7 @@ import web/html/home   // home-row, render-item-list, pagination
 
 pub fun render-actor-page( a : ap-actor, rows : list<home-row>,
                            page : int, total : int, size : int,
-                           max-width : string = "1080px" ) : div string
+                           chrome : chrome = default-chrome ) : div string
   val title = if a.name == "" then a.preferred-username else a.name
   val jsonld = json/show(ap-actor/to-json(a))
   val base = "/users/" ++ a.preferred-username ++ "?page="
@@ -40,4 +40,4 @@ pub fun render-actor-page( a : ap-actor, rows : list<home-row>,
     "  <p class=\"hint\">follow this user from another instance: copy the URL above.</p>",
     "</section>"
   ]).join("\n")
-  layout(title, jsonld, "<a href=\"/users/" ++ esc(a.preferred-username) ++ "\">" ++ esc(a.preferred-username) ++ "</a>", body, max-width)
+  layout(title, jsonld, "<a href=\"/users/" ++ esc(a.preferred-username) ++ "\">" ++ esc(a.preferred-username) ++ "</a>", body, chrome)
